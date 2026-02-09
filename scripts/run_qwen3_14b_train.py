@@ -137,13 +137,11 @@ def _build_training_cmd(args, arch: Dict[str, Any]) -> List[str]:
         "--adam-beta2", str(args.adam_beta2),
         "--adam-eps", str(args.adam_eps),
         "--data-path", args.data_path,
-        "--data-impl", args.data_impl,
         "--tokenizer-type", "HuggingFaceTokenizer",
         "--tokenizer-model", args.tokenizer_path,
         "--reset-position-ids",
         "--reset-attention-mask",
         "--bf16",
-        "--use-te",
         "--transformer-impl", "transformer_engine",
         "--use-flash-attn",
         "--attention-softmax-in-fp32",
@@ -195,7 +193,6 @@ def main():
     parser.add_argument("--global-batch-size", type=int, default=64)
     parser.add_argument("--seq-length", type=int, default=8192)
     parser.add_argument("--pack-data", action="store_true")
-    parser.add_argument("--data-impl", default="mmap")
 
     parser.add_argument("--train-iters", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=2e-5)
