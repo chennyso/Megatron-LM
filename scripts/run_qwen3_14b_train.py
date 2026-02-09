@@ -148,6 +148,7 @@ def _build_training_cmd(args, arch: Dict[str, Any]) -> List[str]:
         "--disable-bias-linear",
         "--attention-dropout", "0.0",
         "--hidden-dropout", "0.0",
+        "--no-gradient-accumulation-fusion",
         "--save", args.output_dir,
         "--save-interval", str(args.save_interval),
         "--eval-iters", str(args.eval_iters),
