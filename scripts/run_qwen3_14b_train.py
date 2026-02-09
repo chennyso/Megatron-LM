@@ -122,8 +122,6 @@ def _build_training_cmd(args, arch: Dict[str, Any]) -> List[str]:
         "--micro-batch-size", str(args.micro_batch_size),
         "--global-batch-size", str(args.global_batch_size),
         "--seq-length", str(args.seq_length),
-        "--encoder-seq-length", str(args.seq_length),
-        "--decoder-seq-length", str(args.seq_length),
         "--max-position-embeddings", str(max(args.seq_length, arch["max_position_embeddings"])),
         "--train-iters", str(args.train_iters),
         "--lr", str(args.lr),
