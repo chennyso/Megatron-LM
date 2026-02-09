@@ -108,7 +108,7 @@ def _build_training_cmd(args, arch: Dict[str, Any]) -> List[str]:
         "--normalization", "RMSNorm",
         "--norm-epsilon", str(arch["norm_epsilon"]),
         "--position-embedding-type", "rope",
-        "--rotary-base", str(arch["rotary_base"]),
+        "--rotary-base", str(int(arch["rotary_base"])),
         "--rotary-percent", str(arch["rotary_percent"]),
         "--use-rotary-position-embeddings",
         "--max-position-embeddings", str(max(args.seq_length, arch["max_position_embeddings"])),
