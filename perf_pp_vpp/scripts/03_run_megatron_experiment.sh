@@ -336,9 +336,13 @@ upload_file() {
   local pod="$1"
   local local_path="$2"
   local remote_path="$3"
+  local remote_dir
 
-  ${KUBECTL_BIN} exec -n "${K8S_NAMESPACE}" "${pod}" -- sh -lc "mkdir -p \"$(dirname "${remote_path}")\"" < /dev/null
-  cat "${local_path}" | ${KUBECTL_BIN} exec -i -n "${K8S_NAMESPACE}" "${pod}" -- sh -lc "cat > \"${remote_path}\""
+  remote_dir="$(dirname "${remote_path}")"
+  ${KUBECTL_BIN} exec -n "${K8S_NAMESPACE}" "${pod}" -- sh -lc "mkdir -p \"${remote_dir}\"" < /dev/null
+  if ! ${KUBECTL_BIN} cp "${local_path}" "${K8S_NAMESPACE}/${pod}:${remote_path}" >/dev/null 2>&1; then
+    cat "${local_path}" | ${KUBECTL_BIN} exec -i -n "${K8S_NAMESPACE}" "${pod}" -- sh -lc "cat > \"${remote_path}\""
+  fi
 }
 
 for pod in "${NODE0_POD}" "${NODE1_POD}"; do
