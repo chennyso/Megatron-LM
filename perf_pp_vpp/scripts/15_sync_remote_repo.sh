@@ -61,5 +61,5 @@ for pod in "${PODS[@]}"; do
   fi
 
   ${KUBECTL_BIN} exec -n "${K8S_NAMESPACE}" "${pod}" -- sh -lc \
-    "cd \"${REMOTE_PROJECT_ROOT}\" && ${git_fetch_prefix} fetch origin --tags --prune && if git show-ref --verify --quiet \"refs/remotes/origin/${REF}\"; then git checkout -B \"${REF}\" \"origin/${REF}\" && ${git_fetch_prefix} pull --ff-only origin \"${REF}\"; else git checkout --detach \"${REF}\"; fi && git rev-parse HEAD"
+    "cd \"${REMOTE_PROJECT_ROOT}\" && (${git_fetch_prefix} fetch origin --tags --prune \"+refs/heads/${REF}:refs/remotes/origin/${REF}\" || ${git_fetch_prefix} fetch origin --tags --prune) && if git show-ref --verify --quiet \"refs/remotes/origin/${REF}\"; then git checkout -B \"${REF}\" \"origin/${REF}\" && ${git_fetch_prefix} pull --ff-only origin \"${REF}\"; else git checkout --detach \"${REF}\"; fi && git rev-parse HEAD"
 done
