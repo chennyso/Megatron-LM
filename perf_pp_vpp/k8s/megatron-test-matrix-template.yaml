@@ -50,7 +50,7 @@ data:
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
     # Run Megatron
-    cd /workspace/code/Megatron-LM
+    cd /workspace/code/code/Megatron-LM
     echo "Launching: TP=${TP} PP=${PP} VPP=${VPP} MBS=${MBS} SEQ=${SEQ}"
     exec torchrun --nnodes="$WS" --nproc_per_node="$NPROC" --node_rank="$RANK" \
         --master_addr="$MASTER_ADDR" --master_port="$PORT" --rdzv_backend=static \
@@ -179,12 +179,18 @@ spec:
           volumeMounts:
           - name: workspace
             mountPath: /workspace
+          - name: code
+            mountPath: /workspace/code
           - name: dev-infiniband
             mountPath: /dev/infiniband
           - name: dshm
             mountPath: /dev/shm
         volumes:
         - name: workspace
+          configMap:
+            name: megatron-test-matrix-config
+            defaultMode: 0755
+        - name: code
           persistentVolumeClaim:
             claimName: chenny-workspace
         - name: dev-infiniband
