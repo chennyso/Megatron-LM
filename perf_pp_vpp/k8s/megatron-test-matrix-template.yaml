@@ -1,0 +1,197 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: megatron-test-matrix-config
+  namespace: default
+data:
+  launch.sh: |
+    #!/bin/bash
+    set -eu
+    SVC="${SERVICE_NAME:-megatron-test-svc}"; NS="${NAMESPACE:-default}"
+    NPROC="${NPROC_PER_NODE:-8}"; WS="${WORLD_SIZE:-2}"; PORT="${MASTER_PORT:-29500}"
+    MAXW="${MAX_WAIT:-300}"
+    echo "=== Megatron Test Matrix: $(hostname) ==="
+
+    # Find IB interface
+    IB_IF=""; IB_IP=""
+    for i in net1 net2 net3; do [ -d "/sys/class/net/$i" ] && { IB_IF="$i"; break; }; done
+    if [ -n "$IB_IF" ]; then
+        for ip in $(hostname -I 2>/dev/null); do case "$ip" in 192.168.12.*) IB_IP="$ip"; break;; esac; done
+    fi
+    echo "IB: ${IB_IF:-none} IP: ${IB_IP:-none}"
+    RDMA_DEV=""; [ -n "$IB_IF" ] && RDMA_DEV=$(ls /sys/class/net/"$IB_IF"/device/infiniband/ 2>/dev/null | head -1)
+    echo "RDMA: ${RDMA_DEV:-none}"
+
+    # Wait for DNS peers
+    echo "Waiting for DNS: ${SVC}..."
+    PEERS=""; waited=0
+    while [ $waited -lt $MAXW ]; do
+        PEERS=$(getent hosts "$SVC" 2>/dev/null | awk '{print $1}' | sort) || true
+        c=0; [ -n "$PEERS" ] && c=$(echo "$PEERS" | wc -l)
+        [ "$c" -ge "$WS" ] && { echo "  ${c}/${WS} peers after ${waited}s"; break; }
+        sleep 5; waited=$((waited+5))
+    done
+    c=0; [ -n "${PEERS:-}" ] && c=$(echo "$PEERS" | wc -l)
+    [ "$c" -lt "$WS" ] && { echo "ERROR: only ${c} peers" >&2; exit 1; }
+
+    MY_IP=$(hostname -I | awk '{print $1}')
+    MASTER_ADDR=$(echo "$PEERS" | head -1)
+    RANK=0; for ip in $PEERS; do [ "$ip" = "$MY_IP" ] && break; RANK=$((RANK+1)); done
+    echo "RANK=${RANK}/${WS} MASTER=${MASTER_ADDR}:${PORT}"
+
+    # NCCL/IB environment
+    export NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=0 NCCL_NET_GDR_LEVEL=5
+    export NCCL_IB_HCA=${RDMA_DEV:-mlx5} NCCL_IB_GID_INDEX=0 NCCL_IB_TC=136
+    export NCCL_SOCKET_IFNAME="${IB_IF:-net1}" NCCL_DEBUG=WARN
+    export NCCL_IB_QPS_PER_CONNECTION=4 NCCL_IB_TIMEOUT=22 NCCL_MIN_NCHANNELS=4
+    export UCX_NET_DEVICES="${IB_IF:-net1}"
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+    export CUDA_DEVICE_MAX_CONNECTIONS=1
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    # Run Megatron
+    cd /workspace/code/Megatron-LM
+    echo "Launching: TP=${TP} PP=${PP} VPP=${VPP} MBS=${MBS} SEQ=${SEQ}"
+    exec torchrun --nnodes="$WS" --nproc_per_node="$NPROC" --node_rank="$RANK" \
+        --master_addr="$MASTER_ADDR" --master_port="$PORT" --rdzv_backend=static \
+        pretrain_gpt.py \
+        --use-mcore-models --transformer-impl transformer_engine \
+        --attention-backend flash --use-flash-attn \
+        --num-layers 64 --hidden-size 5120 --ffn-hidden-size 25600 \
+        --num-attention-heads 64 --group-query-attention --num-query-groups 8 --kv-channels 80 \
+        --max-position-embeddings 40960 --position-embedding-type rope \
+        --rotary-percent 1.0 --rotary-base 1000000 \
+        --normalization RMSNorm --norm-epsilon 1e-6 --qk-layernorm --swiglu \
+        --untie-embeddings-and-output-weights --disable-bias-linear \
+        --attention-dropout 0.0 --hidden-dropout 0.0 \
+        --make-vocab-size-divisible-by 128 --vocab-size 151936 \
+        --tensor-model-parallel-size ${TP} \
+        --pipeline-model-parallel-size ${PP} \
+        --num-layers-per-virtual-pipeline-stage ${VPP} \
+        --micro-batch-size ${MBS} \
+        --seq-length ${SEQ} \
+        --global-batch-size 32 \
+        --train-iters 6 --eval-iters 0 --eval-interval 1 --log-interval 1 \
+        --timing-log-level 2 --log-throughput --distributed-timeout-minutes 60 \
+        --lr 1e-4 --min-lr 1e-4 --lr-decay-style constant --lr-warmup-iters 0 \
+        --seed 1234 --bf16 --empty-unused-memory-level 1 \
+        --recompute-granularity full --no-gradient-accumulation-fusion \
+        --no-rope-fusion --no-persist-layer-norm \
+        --recompute-method uniform --recompute-num-layers 1 \
+        --use-distributed-optimizer --sequence-parallel \
+        --use-precision-aware-optimizer \
+        --main-grads-dtype bf16 --exp-avg-dtype bf16 --exp-avg-sq-dtype bf16 \
+        --no-overlap-p2p-communication \
+        --mock-data --tokenizer-type NullTokenizer --split 99,1,0 \
+        --no-create-attention-mask-in-dataloader --no-mmap-bin-files --num-workers 1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: megatron-test-svc
+  namespace: default
+  labels:
+    app: megatron-test
+spec:
+  clusterIP: None
+  selector:
+    app: megatron-test
+  ports:
+  - name: nccl
+    port: 29500
+    targetPort: 29500
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: megatron-test-${TEST_NAME}
+  namespace: default
+  labels:
+    app: megatron-test
+spec:
+  minAvailable: 2
+  schedulerName: volcano
+  queue: default
+  tasks:
+  - replicas: 2
+    name: worker
+    policies:
+    - event: TaskCompleted
+      action: CompleteJob
+    template:
+      metadata:
+        annotations:
+          k8s.v1.cni.cncf.io/networks: sriov-ib-network
+        labels:
+          app: megatron-test
+      spec:
+        restartPolicy: Never
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: megatron-test
+              topologyKey: kubernetes.io/hostname
+        containers:
+        - name: trainer
+          image: nvcr.io/nvidia/pytorch:26.04-py3
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/workspace/launch.sh"]
+          env:
+          - name: SERVICE_NAME
+            value: megatron-test-svc
+          - name: NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: WORLD_SIZE
+            value: "2"
+          - name: NPROC_PER_NODE
+            value: "8"
+          - name: MASTER_PORT
+            value: "29500"
+          - name: TP
+            value: "${TP}"
+          - name: PP
+            value: "${PP}"
+          - name: VPP
+            value: "${VPP}"
+          - name: MBS
+            value: "${MBS}"
+          - name: SEQ
+            value: "${SEQ}"
+          resources:
+            requests:
+              nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
+              cpu: "64"
+              memory: "200Gi"
+            limits:
+              nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
+              cpu: "90"
+              memory: "400Gi"
+          securityContext:
+            capabilities:
+              add:
+              - IPC_LOCK
+          volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: dev-infiniband
+            mountPath: /dev/infiniband
+          - name: dshm
+            mountPath: /dev/shm
+        volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: chenny-workspace
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband
+            type: DirectoryOrCreate
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi
