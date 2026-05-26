@@ -47,6 +47,11 @@ perf_pp_vpp/scripts/15_sync_remote_repo.sh --ref <branch-or-commit> --force-clea
 ```
 
 The sync script refuses dirty pod worktrees by default so you do not silently lose remote edits.
+If the container trust store is incomplete and GitHub HTTPS verification fails, use:
+
+```bash
+perf_pp_vpp/scripts/15_sync_remote_repo.sh --ref <branch-or-commit> --no-ssl-verify
+```
 
 ## Environment configuration
 
