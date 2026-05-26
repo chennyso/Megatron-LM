@@ -1,0 +1,36 @@
+{
+  "name": "q32_pp8_vpp4_covpipe_boundary_shield",
+  "pp": 8,
+  "vpp": 4,
+  "num_layers": 64,
+  "seed": "uniform",
+  "transforms": [
+    {
+      "kind": "move_boundary",
+      "stage": 3,
+      "delta_layers": 1
+    },
+    {
+      "kind": "reshape_vpp_chunk",
+      "rank": 3,
+      "chunks": [2, 2, 2, 3]
+    },
+    {
+      "kind": "reshape_vpp_chunk",
+      "rank": 4,
+      "chunks": [2, 2, 2, 1]
+    },
+    {
+      "kind": "delay_wgrad",
+      "rank": 3,
+      "chunk": 0,
+      "target": "recv_wait"
+    },
+    {
+      "kind": "delay_wgrad",
+      "rank": 4,
+      "chunk": 0,
+      "target": "send_inflight"
+    }
+  ]
+}

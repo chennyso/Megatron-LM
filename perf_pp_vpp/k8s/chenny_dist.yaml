@@ -1,0 +1,109 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: chenny-dist-no-preempt
+value: 1000
+globalDefault: false
+preemptionPolicy: Never
+description: "Dedicated priority class for chenny-dist pods that must never preempt other workloads."
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chenny-dist
+  namespace: default
+  labels:
+    app: chenny-dist
+spec:
+  clusterIP: None
+  selector:
+    app: chenny-dist
+  ports:
+  - name: nccl
+    port: 29500
+    targetPort: 29500
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chenny-dist
+  namespace: default
+  labels:
+    app: chenny-dist
+spec:
+  serviceName: chenny-dist
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: chenny-dist
+  template:
+    metadata:
+      labels:
+        app: chenny-dist
+      annotations:
+        k8s.v1.cni.cncf.io/networks: sriov-ib-network
+    spec:
+      priorityClassName: chenny-dist-no-preempt
+      terminationGracePeriodSeconds: 30
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - g5
+                - g6
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: chenny-dist
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: worker
+        image: nvcr.io/nvidia/pytorch:26.04-py3
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -lc
+        - |
+          set -euo pipefail
+          trap 'exit 0' TERM INT
+          while true; do sleep 3600; done
+        resources:
+          requests:
+            cpu: "64"
+            memory: 200Gi
+            nvidia.com/gpu: "8"
+            nvidia.com/mlnxnics: "1"
+          limits:
+            cpu: "90"
+            memory: 400Gi
+            nvidia.com/gpu: "8"
+            nvidia.com/mlnxnics: "1"
+        securityContext:
+          capabilities:
+            add:
+            - IPC_LOCK
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: dev-infiniband
+          mountPath: /dev/infiniband
+        - name: dshm
+          mountPath: /dev/shm
+      volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: chenny-workspace
+      - name: dev-infiniband
+        hostPath:
+          path: /dev/infiniband
+          type: DirectoryOrCreate
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Gi

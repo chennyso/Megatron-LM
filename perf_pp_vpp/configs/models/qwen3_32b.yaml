@@ -1,0 +1,12 @@
+model_name: qwen3_32b
+source_env_var: MODEL_SOURCE_PATH_QWEN3_32B
+hidden_size: auto
+intermediate_size: auto
+vocab_size: auto
+num_layers: 64
+num_attention_heads: 64
+num_query_groups: 8
+seq_length_list: [4096, 8192]
+default_seq_length: 4096
+max_position_embeddings: 32768
+rotary_base: 1000000

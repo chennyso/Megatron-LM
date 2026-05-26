@@ -1,0 +1,49 @@
+model: qwen3_14b
+seq_lengths: [4096, 8192]
+micro_batch_size: 1
+global_batch_size_candidates: auto
+precision: bf16
+activation_checkpointing: true
+distributed_optimizer: true
+train_iters: 30
+warmup_iters: 10
+profile_start_iter: 12
+profile_end_iter: 16
+repeat: 3
+overlap_modes: [baseline, p2p_overlap, dp_overlap, all_overlap]
+experiments:
+  - name: q14_pp8_dp2_tp1_vpp1
+    pp: 8
+    dp: 2
+    tp: 1
+    vpp: 1
+  - name: q14_pp8_dp2_tp1_vpp2
+    pp: 8
+    dp: 2
+    tp: 1
+    vpp: 2
+  - name: q14_pp8_dp2_tp1_vpp4
+    pp: 8
+    dp: 2
+    tp: 1
+    vpp: 4
+  - name: q14_pp16_dp1_tp1_vpp1
+    pp: 16
+    dp: 1
+    tp: 1
+    vpp: 1
+  - name: q14_pp16_dp1_tp1_vpp2
+    pp: 16
+    dp: 1
+    tp: 1
+    vpp: 2
+  - name: q14_pp8_dp1_tp2_vpp1
+    pp: 8
+    dp: 1
+    tp: 2
+    vpp: 1
+  - name: q14_pp8_dp1_tp2_vpp2
+    pp: 8
+    dp: 1
+    tp: 2
+    vpp: 2

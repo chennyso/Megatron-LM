@@ -1,0 +1,28 @@
+model: qwen3_32b
+seq_lengths: [1024, 2048, 4096]
+micro_batch_size: 1
+precision: bf16
+activation_checkpointing: true
+distributed_optimizer: true
+train_iters: 6
+warmup_iters: 2
+profile_start_iter: 3
+profile_end_iter: 4
+repeat: 1
+overlap_modes: [baseline, all_overlap]
+experiments:
+  - name: q32_pp4_dp2_tp2_vpp1
+    pp: 4
+    dp: 2
+    tp: 2
+    vpp: 1
+  - name: q32_pp4_dp2_tp2_vpp2
+    pp: 4
+    dp: 2
+    tp: 2
+    vpp: 2
+  - name: q32_pp4_dp2_tp2_vpp4
+    pp: 4
+    dp: 2
+    tp: 2
+    vpp: 4
