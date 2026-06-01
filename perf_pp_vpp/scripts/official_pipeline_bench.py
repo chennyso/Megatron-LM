@@ -101,11 +101,16 @@ def main() -> None:
     torch.manual_seed(1234)
     torch.cuda.manual_seed_all(1234)
 
-    model = BenchModel(cfg.num_layers, cfg.hidden_size).eval()
-    sample = torch.randn(cfg.micro_batch_size, cfg.seq_len, cfg.hidden_size)
+    model = BenchModel(cfg.num_layers, cfg.hidden_size).to(device=device, dtype=torch.float16).eval()
+    sample = torch.randn(
+        cfg.micro_batch_size,
+        cfg.seq_len,
+        cfg.hidden_size,
+        device=device,
+        dtype=torch.float16,
+    )
     pipe = pp.Pipe.from_tracing(model, example_args=(sample,))
     stage = pipe.build_stage(rank, device, dist.group.WORLD)
-    stage = stage.to(dtype=torch.float16)
 
     loss_fn = nn.MSELoss()
     schedule_cls = build_schedule(cfg.schedule)
