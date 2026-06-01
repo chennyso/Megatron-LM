@@ -114,7 +114,10 @@ def main() -> None:
 
     loss_fn = nn.MSELoss()
     schedule_cls = build_schedule(cfg.schedule)
-    schedule = schedule_cls(stage, cfg.microbatches, loss_fn=loss_fn, scale_grads=True)
+    if cfg.schedule == "dualpipev":
+        schedule = schedule_cls([stage], cfg.microbatches, loss_fn=loss_fn, scale_grads=True)
+    else:
+        schedule = schedule_cls(stage, cfg.microbatches, loss_fn=loss_fn, scale_grads=True)
 
     batch = torch.randn(
         cfg.micro_batch_size * cfg.microbatches,
