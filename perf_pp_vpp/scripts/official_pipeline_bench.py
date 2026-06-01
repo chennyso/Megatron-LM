@@ -110,13 +110,20 @@ def main() -> None:
         dtype=torch.float16,
     )
     pipe = pp.Pipe.from_tracing(model, example_args=(sample,))
-    stage = pipe.build_stage(rank, device, dist.group.WORLD)
 
     loss_fn = nn.MSELoss()
     schedule_cls = build_schedule(cfg.schedule)
     if cfg.schedule == "dualpipev":
-        schedule = schedule_cls([stage], cfg.microbatches, loss_fn=loss_fn, scale_grads=True)
+        stage_indices = [rank, 2 * world_size - 1 - rank]
+        if max(stage_indices) >= cfg.num_layers:
+            raise ValueError(
+                "dualpipev requires num_layers >= 2 * world_size, "
+                f"got num_layers={cfg.num_layers} and world_size={world_size}"
+            )
+        stages = [pipe.build_stage(stage_index, device, dist.group.WORLD) for stage_index in stage_indices]
+        schedule = schedule_cls(stages, cfg.microbatches, loss_fn=loss_fn, scale_grads=True)
     else:
+        stage = pipe.build_stage(rank, device, dist.group.WORLD)
         schedule = schedule_cls(stage, cfg.microbatches, loss_fn=loss_fn, scale_grads=True)
 
     batch = torch.randn(
