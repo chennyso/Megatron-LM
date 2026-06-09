@@ -1,7 +1,10 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 import contextlib
+import json
+import os
 from functools import partial
+from pathlib import Path
 from typing import Callable, Iterator, List, Optional, Union
 
 import torch
@@ -798,8 +801,81 @@ def get_pp_rank_microbatches(
     )
 
 
+def _normalize_custom_schedule_entry(entry):
+    if isinstance(entry, dict):
+        try:
+            microbatch_id = entry["microbatch_id"]
+            model_chunk_id = entry["model_chunk_id"]
+        except KeyError as exc:
+            raise ValueError(
+                "custom PP schedule entries must include microbatch_id and model_chunk_id"
+            ) from exc
+    elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+        microbatch_id, model_chunk_id = entry
+    else:
+        raise ValueError(
+            "custom PP schedule entries must be dicts or [microbatch_id, model_chunk_id] pairs"
+        )
+    return int(microbatch_id), int(model_chunk_id)
+
+
+def _load_custom_schedule_payload():
+    custom_schedule = os.environ.get("MEGATRON_CUSTOM_PP_SCHEDULE_TABLE")
+    if not custom_schedule:
+        return None
+
+    schedule_path = Path(custom_schedule)
+    if schedule_path.exists():
+        payload = json.loads(schedule_path.read_text(encoding="utf-8"))
+    else:
+        payload = json.loads(custom_schedule)
+
+    if isinstance(payload, dict):
+        return payload.get("schedule_table", payload.get("table"))
+    return payload
+
+
+def _validate_custom_schedule_table(schedule_table, num_microbatches, num_model_chunks):
+    expected_len = num_microbatches * num_model_chunks
+    if len(schedule_table) != expected_len:
+        raise ValueError(
+            "custom PP schedule table must contain exactly "
+            f"{expected_len} entries, got {len(schedule_table)}"
+        )
+
+    expected_pairs = {
+        (microbatch_id, model_chunk_id)
+        for microbatch_id in range(num_microbatches)
+        for model_chunk_id in range(num_model_chunks)
+    }
+    actual_pairs = set(schedule_table)
+    if actual_pairs != expected_pairs:
+        missing = sorted(expected_pairs - actual_pairs)[:8]
+        extra = sorted(actual_pairs - expected_pairs)[:8]
+        raise ValueError(
+            "custom PP schedule table must cover every (microbatch, model_chunk) once; "
+            f"missing={missing}, extra={extra}"
+        )
+
+
+def _maybe_load_custom_schedule_table(num_microbatches, num_model_chunks):
+    payload = _load_custom_schedule_payload()
+    if payload is None:
+        return None
+    if not isinstance(payload, list):
+        raise ValueError("custom PP schedule table payload must be a list")
+
+    schedule_table = [_normalize_custom_schedule_entry(entry) for entry in payload]
+    _validate_custom_schedule_table(schedule_table, num_microbatches, num_model_chunks)
+    return schedule_table
+
+
 def get_schedule_table(num_microbatches, num_model_chunks, microbatch_group_size_per_vp_stage):
     """Get the schedule table for PP scheduling."""
+    custom_schedule_table = _maybe_load_custom_schedule_table(num_microbatches, num_model_chunks)
+    if custom_schedule_table is not None:
+        return custom_schedule_table
+
     schedule_table = []
     for min_microbatch_id_in_group in range(
         0, num_microbatches, microbatch_group_size_per_vp_stage

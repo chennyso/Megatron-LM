@@ -54,6 +54,8 @@ class HeteroVPPPlan:
     stage_layer_counts: list[int]
     layout: str
     chunk_matrix: list[list[dict]]
+    active_chunk_matrix: list[list[bool]]
+    global_empty_chunks: list[int]
     schedule_table: list[dict]
     schedule_policy: str
     microbatches: int
@@ -285,6 +287,19 @@ def matrix_to_dict(matrix: Sequence[Sequence[ChunkSpec]]) -> list[list[dict]]:
     return [[asdict(spec) for spec in row] for row in matrix]
 
 
+def active_chunk_matrix(matrix: Sequence[Sequence[ChunkSpec]]) -> list[list[bool]]:
+    return [[spec.is_active_compute for spec in row] for row in matrix]
+
+
+def global_empty_chunks(matrix: Sequence[Sequence[ChunkSpec]]) -> list[int]:
+    global_vpp = len(matrix[0])
+    return [
+        vpp_rank
+        for vpp_rank in range(global_vpp)
+        if not any(row[vpp_rank].is_active_compute for row in matrix)
+    ]
+
+
 def validate_with_megatron(layout: str, pp_size: int, num_layers: int) -> None:
     repo = Path(__file__).resolve().parents[2]
     if str(repo) not in sys.path:
@@ -336,6 +351,7 @@ def build_plan(args: argparse.Namespace) -> HeteroVPPPlan:
     notes = [
         "global_vpp is max(effective_vpp); inactive per-stage chunks are empty layout stages.",
         "schedule_table covers every (microbatch, model_chunk) once and can be passed through MEGATRON_CUSTOM_PP_SCHEDULE_TABLE.",
+        "Per-stage empty chunks are not skipped independently because neighboring PP ranks still need matched send/recv ordering.",
     ]
     if any(v != global_vpp for v in effective_vpp):
         notes.append("This is effective heterogeneous VPP under Megatron's global VPP constraint.")
@@ -348,6 +364,8 @@ def build_plan(args: argparse.Namespace) -> HeteroVPPPlan:
         stage_layer_counts=counts,
         layout=layout,
         chunk_matrix=matrix_to_dict(matrix),
+        active_chunk_matrix=active_chunk_matrix(matrix),
+        global_empty_chunks=global_empty_chunks(matrix),
         schedule_table=schedule_table,
         schedule_policy=args.schedule_policy,
         microbatches=args.microbatches,
