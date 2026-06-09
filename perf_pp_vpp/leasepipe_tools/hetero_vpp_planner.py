@@ -238,7 +238,7 @@ def build_chunk_order(matrix: Sequence[Sequence[ChunkSpec]], policy: str) -> lis
     chunks = list(range(global_vpp))
     loads = chunk_decoder_loads(matrix)
     active = chunk_active_counts(matrix)
-    if policy == "default":
+    if policy in {"default", "wavefront"}:
         return chunks
     if policy == "heavy-first":
         return sorted(chunks, key=lambda c: (-loads[c], -active[c], c))
@@ -253,9 +253,9 @@ def build_chunk_order(matrix: Sequence[Sequence[ChunkSpec]], policy: str) -> lis
 
 
 def schedule_policy_is_megatron_safe(policy: str, chunk_order: Sequence[int]) -> bool:
-    """Megatron's interleaved runtime assumes the forward wave starts in VP order."""
+    """Megatron requires each microbatch to visit VP chunks in dependency order."""
 
-    return policy == "default" and list(chunk_order) == list(range(len(chunk_order)))
+    return list(chunk_order) == list(range(len(chunk_order)))
 
 
 def build_schedule_table(
@@ -264,6 +264,7 @@ def build_schedule_table(
     global_vpp: int,
     microbatch_group_size: int,
     chunk_order: Sequence[int],
+    schedule_policy: str,
 ) -> list[dict]:
     if sorted(chunk_order) != list(range(global_vpp)):
         raise SystemExit("chunk_order must be a permutation of all model chunks")
@@ -276,8 +277,21 @@ def build_schedule_table(
     virtual_id = 0
     for min_mb in range(0, microbatches, microbatch_group_size):
         max_mb = min(min_mb + microbatch_group_size, microbatches)
-        for chunk in chunk_order:
-            for mb in range(min_mb, max_mb):
+        if schedule_policy == "wavefront":
+            pairs = [
+                (mb, chunk)
+                for diagonal in range((max_mb - min_mb) + global_vpp - 1)
+                for mb in range(min_mb, max_mb)
+                for chunk in range(global_vpp)
+                if (mb - min_mb) + chunk == diagonal
+            ]
+        else:
+            pairs = [
+                (mb, chunk)
+                for chunk in chunk_order
+                for mb in range(min_mb, max_mb)
+            ]
+        for mb, chunk in pairs:
                 table.append(
                     {
                         "virtual_microbatch_id": virtual_id,
@@ -287,6 +301,31 @@ def build_schedule_table(
                 )
                 virtual_id += 1
     return table
+
+
+def verify_forward_chunk_dependencies(
+    schedule_table: Sequence[dict],
+    *,
+    microbatches: int,
+    global_vpp: int,
+) -> None:
+    positions = {
+        (int(item["microbatch_id"]), int(item["model_chunk_id"])): idx
+        for idx, item in enumerate(schedule_table)
+    }
+    violations = []
+    for mb in range(microbatches):
+        for chunk in range(1, global_vpp):
+            prev_pos = positions[(mb, chunk - 1)]
+            cur_pos = positions[(mb, chunk)]
+            if cur_pos < prev_pos:
+                violations.append((mb, chunk - 1, prev_pos, chunk, cur_pos))
+    if violations:
+        raise SystemExit(
+            "schedule violates forward chunk dependencies "
+            "(microbatch, prev_chunk, prev_pos, chunk, chunk_pos): "
+            f"{violations[:8]}"
+        )
 
 
 def matrix_to_dict(matrix: Sequence[Sequence[ChunkSpec]]) -> list[list[dict]]:
@@ -361,11 +400,17 @@ def build_plan(args: argparse.Namespace) -> HeteroVPPPlan:
         global_vpp=global_vpp,
         microbatch_group_size=args.microbatch_group_size,
         chunk_order=chunk_order,
+        schedule_policy=args.schedule_policy,
+    )
+    verify_forward_chunk_dependencies(
+        schedule_table,
+        microbatches=args.microbatches,
+        global_vpp=global_vpp,
     )
     notes = [
         "global_vpp is max(effective_vpp); inactive per-stage chunks are empty layout stages.",
         "schedule_table covers every (microbatch, model_chunk) once and can be passed through MEGATRON_CUSTOM_PP_SCHEDULE_TABLE.",
-        "Megatron-safe schedule generation keeps model chunks in default VP order.",
+        "Megatron-safe schedule generation preserves per-microbatch forward chunk dependencies.",
         "Per-stage empty chunks are not skipped independently because neighboring PP ranks still need matched send/recv ordering.",
     ]
     if args.allow_unsafe_schedule and not schedule_policy_is_megatron_safe(args.schedule_policy, chunk_order):
@@ -423,7 +468,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--microbatch-group-size", type=int, default=1)
     parser.add_argument(
         "--schedule-policy",
-        choices=["default", "heavy-first", "light-first", "edge-last"],
+        choices=["default", "wavefront", "heavy-first", "light-first", "edge-last"],
         default="default",
     )
     parser.add_argument(

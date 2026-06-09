@@ -857,6 +857,32 @@ def _validate_custom_schedule_table(schedule_table, num_microbatches, num_model_
             f"missing={missing}, extra={extra}"
         )
 
+    positions = {
+        (microbatch_id, model_chunk_id): idx
+        for idx, (microbatch_id, model_chunk_id) in enumerate(schedule_table)
+    }
+    violations = []
+    for microbatch_id in range(num_microbatches):
+        for model_chunk_id in range(1, num_model_chunks):
+            prev_pos = positions[(microbatch_id, model_chunk_id - 1)]
+            cur_pos = positions[(microbatch_id, model_chunk_id)]
+            if cur_pos < prev_pos:
+                violations.append(
+                    (
+                        microbatch_id,
+                        model_chunk_id - 1,
+                        prev_pos,
+                        model_chunk_id,
+                        cur_pos,
+                    )
+                )
+    if violations:
+        raise ValueError(
+            "custom PP schedule violates forward chunk dependencies "
+            "(microbatch, prev_chunk, prev_pos, chunk, chunk_pos): "
+            f"{violations[:8]}"
+        )
+
 
 def _maybe_load_custom_schedule_table(num_microbatches, num_model_chunks):
     payload = _load_custom_schedule_payload()
