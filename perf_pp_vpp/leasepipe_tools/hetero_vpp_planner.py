@@ -261,6 +261,7 @@ def schedule_policy_is_megatron_safe(policy: str, chunk_order: Sequence[int]) ->
 def build_schedule_table(
     *,
     microbatches: int,
+    pp_size: int,
     global_vpp: int,
     microbatch_group_size: int,
     chunk_order: Sequence[int],
@@ -278,13 +279,12 @@ def build_schedule_table(
     for min_mb in range(0, microbatches, microbatch_group_size):
         max_mb = min(min_mb + microbatch_group_size, microbatches)
         if schedule_policy == "wavefront":
-            pairs = [
-                (mb, chunk)
-                for diagonal in range((max_mb - min_mb) + global_vpp - 1)
-                for mb in range(min_mb, max_mb)
-                for chunk in range(global_vpp)
-                if (mb - min_mb) + chunk == diagonal
-            ]
+            pairs = build_rank_delay_aware_wavefront_pairs(
+                min_mb=min_mb,
+                max_mb=max_mb,
+                global_vpp=global_vpp,
+                pp_size=pp_size,
+            )
         else:
             pairs = [
                 (mb, chunk)
@@ -301,6 +301,49 @@ def build_schedule_table(
                 )
                 virtual_id += 1
     return table
+
+
+def build_rank_delay_aware_wavefront_pairs(
+    *,
+    min_mb: int,
+    max_mb: int,
+    global_vpp: int,
+    pp_size: int,
+) -> list[tuple[int, int]]:
+    """Build a wavefront that respects cross-rank virtual-stage activation latency.
+
+    For chunk c>0, the first PP rank consumes the activation produced by the
+    last PP rank for chunk c-1.  Megatron posts that recv after a prior forward
+    step, so placing (mb, c) immediately after (mb, c-1) is illegal even if the
+    local forward dependency is satisfied.  A gap of pp_size virtual steps is the
+    minimal safe condition for the existing p2p pre/post protocol.
+    """
+
+    if pp_size <= 0:
+        raise SystemExit("--pp-size must be positive")
+    pending = {(mb, chunk) for mb in range(min_mb, max_mb) for chunk in range(global_vpp)}
+    positions: dict[tuple[int, int], int] = {}
+    pairs: list[tuple[int, int]] = []
+    while pending:
+        ready = []
+        for mb, chunk in pending:
+            if chunk == 0:
+                ready.append((mb, chunk))
+                continue
+            prev = (mb, chunk - 1)
+            prev_pos = positions.get(prev)
+            if prev_pos is not None and len(pairs) >= prev_pos + pp_size:
+                ready.append((mb, chunk))
+        if not ready:
+            raise SystemExit(
+                "cannot build rank-delay-aware wavefront; increase microbatch group size "
+                f"or check pp_size={pp_size}, global_vpp={global_vpp}"
+            )
+        mb, chunk = min(ready, key=lambda item: ((item[0] - min_mb) + item[1], item[1], item[0]))
+        pending.remove((mb, chunk))
+        positions[(mb, chunk)] = len(pairs)
+        pairs.append((mb, chunk))
+    return pairs
 
 
 def verify_forward_chunk_dependencies(
@@ -324,6 +367,32 @@ def verify_forward_chunk_dependencies(
         raise SystemExit(
             "schedule violates forward chunk dependencies "
             "(microbatch, prev_chunk, prev_pos, chunk, chunk_pos): "
+            f"{violations[:8]}"
+        )
+
+
+def verify_cross_rank_activation_delay(
+    schedule_table: Sequence[dict],
+    *,
+    microbatches: int,
+    global_vpp: int,
+    pp_size: int,
+) -> None:
+    positions = {
+        (int(item["microbatch_id"]), int(item["model_chunk_id"])): idx
+        for idx, item in enumerate(schedule_table)
+    }
+    violations = []
+    for mb in range(microbatches):
+        for chunk in range(1, global_vpp):
+            prev_pos = positions[(mb, chunk - 1)]
+            cur_pos = positions[(mb, chunk)]
+            if cur_pos < prev_pos + pp_size:
+                violations.append((mb, chunk - 1, prev_pos, chunk, cur_pos, pp_size))
+    if violations:
+        raise SystemExit(
+            "schedule violates cross-rank activation delay "
+            "(microbatch, prev_chunk, prev_pos, chunk, chunk_pos, required_gap): "
             f"{violations[:8]}"
         )
 
@@ -389,6 +458,7 @@ def build_plan(args: argparse.Namespace) -> HeteroVPPPlan:
     chunk_order = build_chunk_order(matrix, args.schedule_policy)
     schedule_table = build_schedule_table(
         microbatches=args.microbatches,
+        pp_size=args.pp_size,
         global_vpp=global_vpp,
         microbatch_group_size=args.microbatch_group_size,
         chunk_order=chunk_order,
@@ -398,6 +468,12 @@ def build_plan(args: argparse.Namespace) -> HeteroVPPPlan:
         schedule_table,
         microbatches=args.microbatches,
         global_vpp=global_vpp,
+    )
+    verify_cross_rank_activation_delay(
+        schedule_table,
+        microbatches=args.microbatches,
+        global_vpp=global_vpp,
+        pp_size=args.pp_size,
     )
     notes = [
         "global_vpp is max(effective_vpp); inactive per-stage chunks are empty layout stages.",
