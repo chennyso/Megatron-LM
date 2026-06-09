@@ -253,9 +253,9 @@ def build_chunk_order(matrix: Sequence[Sequence[ChunkSpec]], policy: str) -> lis
 
 
 def schedule_policy_is_megatron_safe(policy: str, chunk_order: Sequence[int]) -> bool:
-    """Megatron requires each microbatch to visit VP chunks in dependency order."""
+    """Whether Megatron's legacy list queues can run this schedule unchanged."""
 
-    return list(chunk_order) == list(range(len(chunk_order)))
+    return policy == "default" and list(chunk_order) == list(range(len(chunk_order)))
 
 
 def build_schedule_table(
@@ -387,14 +387,6 @@ def build_plan(args: argparse.Namespace) -> HeteroVPPPlan:
     layout = layout_from_matrix(matrix)
     global_vpp = max(effective_vpp)
     chunk_order = build_chunk_order(matrix, args.schedule_policy)
-    if not schedule_policy_is_megatron_safe(args.schedule_policy, chunk_order):
-        if not args.allow_unsafe_schedule:
-            raise SystemExit(
-                f"--schedule-policy={args.schedule_policy} produces chunk_order={chunk_order}, "
-                "which is not safe for Megatron's current interleaved input/output queues. "
-                "Use --schedule-policy default for executable plans, or pass "
-                "--allow-unsafe-schedule only for offline analysis."
-            )
     schedule_table = build_schedule_table(
         microbatches=args.microbatches,
         global_vpp=global_vpp,
@@ -410,12 +402,13 @@ def build_plan(args: argparse.Namespace) -> HeteroVPPPlan:
     notes = [
         "global_vpp is max(effective_vpp); inactive per-stage chunks are empty layout stages.",
         "schedule_table covers every (microbatch, model_chunk) once and can be passed through MEGATRON_CUSTOM_PP_SCHEDULE_TABLE.",
-        "Megatron-safe schedule generation preserves per-microbatch forward chunk dependencies.",
+        "Non-default schedules require MEGATRON_REORDERABLE_PP_RUNTIME=1 so Megatron stores activations and gradients by (microbatch, chunk) token instead of legacy FIFO queues.",
+        "Forward chunk dependencies are verified per microbatch before writing the plan.",
         "Per-stage empty chunks are not skipped independently because neighboring PP ranks still need matched send/recv ordering.",
     ]
-    if args.allow_unsafe_schedule and not schedule_policy_is_megatron_safe(args.schedule_policy, chunk_order):
+    if not schedule_policy_is_megatron_safe(args.schedule_policy, chunk_order):
         notes.append(
-            "WARNING: non-default chunk orders are marked unsafe for the current Megatron runtime."
+            "This schedule is not executable with Megatron's legacy list queues; use the token runtime."
         )
     if any(v != global_vpp for v in effective_vpp):
         notes.append("This is effective heterogeneous VPP under Megatron's global VPP constraint.")
@@ -475,8 +468,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--allow-unsafe-schedule",
         action="store_true",
         help=(
-            "Allow non-default chunk orders for offline analysis. These orders are not safe for "
-            "Megatron's current interleaved runtime without deeper queue/p2p changes."
+            "Deprecated compatibility flag. Non-default schedules are executable with "
+            "MEGATRON_REORDERABLE_PP_RUNTIME=1."
         ),
     )
     parser.add_argument("--plan-out", default=None)
@@ -509,6 +502,8 @@ def main(argv: Iterable[str] | None = None) -> None:
             raise SystemExit("--print-env requires --schedule-out")
         print("\n# Megatron runtime inputs")
         print(f"export MEGATRON_CUSTOM_PP_SCHEDULE_TABLE={args.schedule_out}")
+        if not schedule_policy_is_megatron_safe(args.schedule_policy, plan.chunk_order):
+            print("export MEGATRON_REORDERABLE_PP_RUNTIME=1")
         print(f"# add to torchrun args: --pipeline-model-parallel-layout '{plan.layout}'")
 
 
