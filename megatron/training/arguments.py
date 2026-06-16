@@ -11,6 +11,7 @@ import types
 
 import torch
 
+from megatron.core.pipeline_parallel.strategy_synthesizer import load_strategy_plan
 from megatron.core.rerun_state_machine import RerunStateMachine
 from megatron.core.transformer import TransformerConfig
 from megatron.core.transformer.pipeline_parallel_layer_layout import PipelineParallelLayerLayout
@@ -84,6 +85,7 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
 
 def parse_and_validate_args(extra_args_provider=None, ignore_unknown_args=False, args_defaults={}):
     args = parse_args(extra_args_provider, ignore_unknown_args)
+    _apply_pipeline_strategy_plan_overrides(args)
 
     if args.use_checkpoint_args or args_defaults.get("use_checkpoint_args", False):
         from megatron.training.checkpointing import load_args_from_checkpoint
@@ -109,6 +111,72 @@ def parse_and_validate_args(extra_args_provider=None, ignore_unknown_args=False,
     set_global_variables(args)
 
     return args
+
+
+def _apply_pipeline_strategy_plan_overrides(args) -> None:
+    """Apply agent-generated PP/VPP plan metadata before Megatron validates args."""
+
+    strategy_plan_path = getattr(args, "pipeline_strategy_plan", None)
+    if not strategy_plan_path:
+        return
+
+    plan = load_strategy_plan(strategy_plan_path)
+
+    if plan.pipeline_layout:
+        if (
+            args.pipeline_model_parallel_layout is not None
+            and args.pipeline_model_parallel_layout != plan.pipeline_layout
+        ):
+            warn_rank_0(
+                "Overriding --pipeline-model-parallel-layout with layout from "
+                f"--pipeline-strategy-plan: {plan.pipeline_layout}",
+                args.rank,
+            )
+        args.pipeline_model_parallel_layout = plan.pipeline_layout
+        if getattr(args, "num_virtual_stages_per_pipeline_rank", None) is not None:
+            warn_rank_0(
+                "Clearing --num-virtual-stages-per-pipeline-rank because "
+                "--pipeline-strategy-plan provides --pipeline-model-parallel-layout.",
+                args.rank,
+            )
+        if getattr(args, "num_layers_per_virtual_pipeline_stage", None) is not None:
+            warn_rank_0(
+                "Clearing --num-layers-per-virtual-pipeline-stage because "
+                "--pipeline-strategy-plan provides --pipeline-model-parallel-layout.",
+                args.rank,
+            )
+        args.num_virtual_stages_per_pipeline_rank = None
+        args.num_layers_per_virtual_pipeline_stage = None
+    elif plan.num_virtual_stages_per_pipeline_rank is not None:
+        if (
+            args.num_virtual_stages_per_pipeline_rank is not None
+            and args.num_virtual_stages_per_pipeline_rank != plan.num_virtual_stages_per_pipeline_rank
+        ):
+            warn_rank_0(
+                "Overriding --num-virtual-stages-per-pipeline-rank with value from "
+                f"--pipeline-strategy-plan: {plan.num_virtual_stages_per_pipeline_rank}",
+                args.rank,
+            )
+        if getattr(args, "num_layers_per_virtual_pipeline_stage", None) is not None:
+            warn_rank_0(
+                "Clearing --num-layers-per-virtual-pipeline-stage because "
+                "--pipeline-strategy-plan provides --num-virtual-stages-per-pipeline-rank.",
+                args.rank,
+            )
+        args.num_virtual_stages_per_pipeline_rank = plan.num_virtual_stages_per_pipeline_rank
+        args.num_layers_per_virtual_pipeline_stage = None
+
+    if plan.microbatch_group_size:
+        if (
+            args.microbatch_group_size_per_vp_stage is not None
+            and args.microbatch_group_size_per_vp_stage != plan.microbatch_group_size
+        ):
+            warn_rank_0(
+                "Overriding --microbatch-group-size-per-vp-stage with value from "
+                f"--pipeline-strategy-plan: {plan.microbatch_group_size}",
+                args.rank,
+            )
+        args.microbatch_group_size_per_vp_stage = plan.microbatch_group_size
 
 
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
@@ -2760,6 +2828,42 @@ def _add_distributed_args(parser):
                        'Replicated stages or layers can be described with multiplication. '
                        'Commas can be used cosmetically. '
                        'Default None is not using this argument to set the layout.'))
+    def add_strategy_arg(*name_or_flags, **kwargs):
+        if any(flag in parser._option_string_actions for flag in name_or_flags):
+            return
+        group.add_argument(*name_or_flags, **kwargs)
+
+    add_strategy_arg('--pipeline-strategy-policy',
+                       type=str, default='default',
+                       choices=['default', 'front-loaded'],
+                       help=('Pipeline strategy synthesis policy. '
+                       '"default" preserves the current Megatron schedule. '
+                       '"front-loaded" shrinks the first virtual-pipeline scheduling group as '
+                       'a first dependency-safe strategy-rewrite action.'))
+    add_strategy_arg('--pipeline-strategy-trace-path',
+                       type=str, default=None,
+                       help=('Optional JSON file to dump pipeline strategy trace events '
+                       'for profiling and agentic search.'))
+    add_strategy_arg('--pipeline-strategy-plan',
+                       type=str, default=None,
+                       help='Optional JSON StrategyPlan. Invalid plans fail fast.')
+    add_strategy_arg('--pipeline-strategy-runtime',
+                       type=str, default='fixed',
+                       choices=['fixed', 'ready-set'],
+                       help='Pipeline strategy runtime. ready-set is conservative without tagged P2P.')
+    add_strategy_arg('--pipeline-strategy-search-budget',
+                       type=int, default=16,
+                       help='Offline candidate budget for pipeline strategy search tools.')
+    add_strategy_arg('--pipeline-strategy-memory-budget-mb',
+                       type=float, default=None,
+                       help='Optional memory budget used by StrategyVerifier.')
+    add_strategy_arg('--pipeline-strategy-agent-mode',
+                       type=str, default='off',
+                       choices=['off', 'heuristic', 'llm'],
+                       help='Agent mode for offline strategy proposal.')
+    add_strategy_arg('--pipeline-strategy-profile-steps',
+                       type=int, default=0,
+                       help='Number of steps to profile for strategy traces.')
     group.add_argument('--model-parallel-size', type=int, default=None,
                        help='Old model parallel argument, do not use. Use '
                        '--tensor-model-parallel-size instead.')

@@ -1,6 +1,7 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 import contextlib
+import time
 from functools import partial
 from typing import Callable, Dict, Iterator, List, Optional, Union
 
@@ -13,6 +14,14 @@ from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
 )
 from megatron.core.pipeline_parallel.multimodule_communicator import MultiModulePipelineCommunicator
 from megatron.core.pipeline_parallel.p2p_communication import P2PCommunicator
+from megatron.core.pipeline_parallel.strategy_synthesizer import (
+    CudaTimer,
+    StrategyConstraints,
+    StrategyTrace,
+    StrategyVerifier,
+    build_strategy_schedule_table,
+    load_strategy_plan,
+)
 from megatron.core.pipeline_parallel.utils import (
     is_pp_first_stage,
     is_pp_last_stage,
@@ -916,8 +925,60 @@ def get_pp_rank_microbatches(
     )
 
 
-def get_schedule_table(num_microbatches, num_model_chunks, microbatch_group_size_per_vp_stage):
+def get_schedule_table(
+    num_microbatches,
+    num_model_chunks,
+    microbatch_group_size_per_vp_stage,
+    policy="default",
+    pipeline_parallel_size=None,
+    strategy_plan_path=None,
+    strategy_memory_budget_mb=None,
+    strategy_runtime="fixed",
+):
     """Get the schedule table for PP scheduling."""
+    if strategy_plan_path:
+        if pipeline_parallel_size is None:
+            pipeline_parallel_size = 1
+        constraints = StrategyConstraints(
+            num_microbatches=num_microbatches,
+            num_model_chunks=num_model_chunks,
+            microbatch_group_size=microbatch_group_size_per_vp_stage,
+            pipeline_parallel_size=pipeline_parallel_size,
+        )
+        plan = load_strategy_plan(strategy_plan_path)
+        runtime_policy = dict(plan.runtime_policy or {})
+        runtime_policy.setdefault("runtime", strategy_runtime)
+        plan = plan.__class__(
+            name=plan.name,
+            schedule_table=plan.schedule_table,
+            pipeline_layout=plan.pipeline_layout,
+            num_virtual_stages_per_pipeline_rank=plan.num_virtual_stages_per_pipeline_rank,
+            placement=plan.placement,
+            microbatch_group_size=plan.microbatch_group_size,
+            checkpoint_policy=plan.checkpoint_policy,
+            wgrad_policy=plan.wgrad_policy,
+            runtime_policy=runtime_policy,
+            rewrites=plan.rewrites,
+            tasks=plan.tasks,
+            metadata=plan.metadata,
+        )
+        StrategyVerifier(constraints, memory_budget_mb=strategy_memory_budget_mb).verify(plan)
+        return list(plan.schedule_table)
+
+    if policy != "default":
+        if pipeline_parallel_size is None:
+            pipeline_parallel_size = 1
+        candidate = build_strategy_schedule_table(
+            policy,
+            StrategyConstraints(
+                num_microbatches=num_microbatches,
+                num_model_chunks=num_model_chunks,
+                microbatch_group_size=microbatch_group_size_per_vp_stage,
+                pipeline_parallel_size=pipeline_parallel_size,
+            ),
+        )
+        return list(candidate.schedule_table)
+
     schedule_table = []
     for min_microbatch_id_in_group in range(
         0, num_microbatches, microbatch_group_size_per_vp_stage
@@ -1172,8 +1233,61 @@ def forward_backward_pipelining_with_interleaving(
     # virtual_microbatch_id | 0 1 2 3 4 5 6 7 8 9
     # microbatch_id         | 0 1 2 0 1 2 3 4 3 4
     # model_chunk_id        | 0 0 0 1 1 1 0 0 1 1
+    pipeline_strategy_policy = getattr(config, "pipeline_strategy_policy", "default")
+    pipeline_strategy_plan = getattr(config, "pipeline_strategy_plan", None)
+    pipeline_strategy_runtime = getattr(config, "pipeline_strategy_runtime", "fixed")
+    pipeline_strategy_memory_budget_mb = getattr(
+        config, "pipeline_strategy_memory_budget_mb", None
+    )
+    strategy_trace_path = getattr(config, "pipeline_strategy_trace_path", None)
+    if strategy_trace_path:
+        strategy_trace_path = strategy_trace_path.format(pp_rank=pipeline_parallel_rank)
+    strategy_trace = StrategyTrace(
+        enabled=bool(strategy_trace_path),
+        pp_rank=pipeline_parallel_rank,
+        flush_path=strategy_trace_path,
+    )
+
+    def strategy_trace_hook(name, elapsed_ms, **metadata):
+        strategy_trace.record(
+            name,
+            elapsed_ms,
+            memory_mb=current_memory_mb(),
+            **metadata,
+        )
+
+    config.pipeline_strategy_trace_hook = strategy_trace_hook if strategy_trace.enabled else None
+
+    def current_memory_mb():
+        if not strategy_trace.enabled or not torch.cuda.is_available():
+            return None
+        return float(torch.cuda.memory_allocated() / (1024 * 1024))
+
+    def wait_with_trace(handle, event_name, **metadata):
+        if handle is None:
+            return
+        if not strategy_trace.enabled:
+            handle.wait()
+            return
+        with CudaTimer() as wait_timer:
+            handle.wait()
+        strategy_trace.record(
+            event_name,
+            wait_timer.elapsed_ms,
+            wait_ms=wait_timer.elapsed_ms,
+            memory_mb=current_memory_mb(),
+            **metadata,
+        )
+
     schedule_table = get_schedule_table(
-        num_microbatches, len(model), config.microbatch_group_size_per_vp_stage
+        num_microbatches,
+        len(model),
+        config.microbatch_group_size_per_vp_stage,
+        policy=pipeline_strategy_policy,
+        pipeline_parallel_size=pipeline_parallel_size,
+        strategy_plan_path=pipeline_strategy_plan,
+        strategy_memory_budget_mb=pipeline_strategy_memory_budget_mb,
+        strategy_runtime=pipeline_strategy_runtime,
     )
 
     # Decouple individual lookup table for microbatch_id and model_chunk_id.
@@ -1459,8 +1573,26 @@ def forward_backward_pipelining_with_interleaving(
                 forward_model_chunk_id = get_model_chunk_id(f_virtual_microbatch_id, forward=True)
                 if pre_forward is not None:
                     pre_forward()
-                forward_output_tensor = forward_step_helper(
-                    f_virtual_microbatch_id, checkpoint_activations_microbatch
+                forward_microbatch_id = get_microbatch_id_in_model_chunk(
+                    f_virtual_microbatch_id, forward=True
+                )
+                with CudaTimer() as strategy_timer:
+                    forward_output_tensor = forward_step_helper(
+                        f_virtual_microbatch_id, checkpoint_activations_microbatch
+                    )
+                strategy_trace.record(
+                    "forward_step",
+                    strategy_timer.elapsed_ms,
+                    microbatch_id=forward_microbatch_id,
+                    model_chunk_id=forward_model_chunk_id,
+                    memory_mb=current_memory_mb(),
+                    task_id=(
+                        f"F:r{pipeline_parallel_rank}:c{forward_model_chunk_id}:"
+                        f"m{forward_microbatch_id}"
+                    ),
+                    virtual_microbatch_id=f_virtual_microbatch_id,
+                    ready_ts=None,
+                    scheduled_at=time.time(),
                 )
                 if post_forward is not None:
                     forward_output_tensor = post_forward(forward_output_tensor)
@@ -1470,7 +1602,25 @@ def forward_backward_pipelining_with_interleaving(
                 backward_model_chunk_id = get_model_chunk_id(b_virtual_microbatch_id, forward=False)
                 if pre_backward is not None:
                     pre_backward()
-                backward_input_tensor_grad = backward_step_helper(b_virtual_microbatch_id)
+                backward_microbatch_id = num_released_microbatches(
+                    b_virtual_microbatch_id, backward_model_chunk_id
+                )
+                with CudaTimer() as strategy_timer:
+                    backward_input_tensor_grad = backward_step_helper(b_virtual_microbatch_id)
+                strategy_trace.record(
+                    "backward_step",
+                    strategy_timer.elapsed_ms,
+                    microbatch_id=backward_microbatch_id,
+                    model_chunk_id=backward_model_chunk_id,
+                    memory_mb=current_memory_mb(),
+                    task_id=(
+                        f"B:r{pipeline_parallel_rank}:c{backward_model_chunk_id}:"
+                        f"m{backward_microbatch_id}"
+                    ),
+                    virtual_microbatch_id=b_virtual_microbatch_id,
+                    ready_ts=None,
+                    scheduled_at=time.time(),
+                )
                 if post_backward is not None:
                     backward_input_tensor_grad = post_backward(backward_input_tensor_grad)
             return forward_output_tensor, backward_input_tensor_grad
@@ -1530,7 +1680,13 @@ def forward_backward_pipelining_with_interleaving(
                     'should have registered recv handle'
                 )
                 recv_prev_wait_handle = recv_prev_wait_handles.pop(0)
-                recv_prev_wait_handle.wait()
+                wait_with_trace(
+                    recv_prev_wait_handle,
+                    "p2p_recv_wait_forward",
+                    phase="warmup",
+                    virtual_microbatch_id=k,
+                    model_chunk_id=cur_model_chunk_id,
+                )
 
         # Determine if tensor should be received from previous stage.
         recv_prev, next_forward_model_chunk_id = recv_tensor_from_previous_stage(k, forward=True)
@@ -1619,7 +1775,13 @@ def forward_backward_pipelining_with_interleaving(
                     )
                 )
             if send_next_wait_handle is not None:
-                send_next_wait_handle.wait()
+                wait_with_trace(
+                    send_next_wait_handle,
+                    "p2p_send_wait_forward",
+                    phase="warmup",
+                    virtual_microbatch_id=k,
+                    model_chunk_id=cur_model_chunk_id,
+                )
             if fwd_wait_handles is not None:
                 send_next_wait_handle = (
                     fwd_wait_handles.pop("send_next") if "send_next" in fwd_wait_handles else None
@@ -1629,7 +1791,13 @@ def forward_backward_pipelining_with_interleaving(
             # isend() copies asynchronously; wait until the copy is done before
             # freeing the source buffer, otherwise the next PP stage gets corrupted data.
             if send_next_wait_handle is not None and config.deallocate_pipeline_outputs:
-                send_next_wait_handle.wait()
+                wait_with_trace(
+                    send_next_wait_handle,
+                    "p2p_send_wait_forward",
+                    phase="warmup_deallocate",
+                    virtual_microbatch_id=k,
+                    model_chunk_id=cur_model_chunk_id,
+                )
                 send_next_wait_handle = None
 
             deallocate_output_tensor(output_tensor, config.deallocate_pipeline_outputs)
@@ -1659,7 +1827,12 @@ def forward_backward_pipelining_with_interleaving(
                     )
                 )
                 if send_prev_wait_handle is not None:
-                    send_prev_wait_handle.wait()
+                    wait_with_trace(
+                        send_prev_wait_handle,
+                        "p2p_send_wait_backward",
+                        phase="warmup",
+                        virtual_microbatch_id=k,
+                    )
                 if bwd_wait_handles is not None:
                     send_prev_wait_handle = (
                         bwd_wait_handles.pop("send_prev")
@@ -1704,11 +1877,23 @@ def forward_backward_pipelining_with_interleaving(
                             'should have registered recv handle'
                         )
                         recv_prev_wait_handle = recv_prev_wait_handles.pop(0)
-                        recv_prev_wait_handle.wait()
+                        wait_with_trace(
+                            recv_prev_wait_handle,
+                            "p2p_recv_wait_forward",
+                            phase="steady_pre_forward",
+                            virtual_microbatch_id=forward_k,
+                            model_chunk_id=vp_stage,
+                        )
                     else:
                         if recv_prev_wait_handles is not None and recv_prev_wait_handles:
                             recv_prev_wait_handle = recv_prev_wait_handles.pop(0)
-                            recv_prev_wait_handle.wait()
+                            wait_with_trace(
+                                recv_prev_wait_handle,
+                                "p2p_recv_wait_forward",
+                                phase="steady_pre_forward",
+                                virtual_microbatch_id=forward_k,
+                                model_chunk_id=vp_stage,
+                            )
 
                 deallocate_output_tensor(output_tensor, config.deallocate_pipeline_outputs)
 
@@ -1744,7 +1929,13 @@ def forward_backward_pipelining_with_interleaving(
                     )
                 )
                 if send_next_wait_handle is not None:
-                    send_next_wait_handle.wait()
+                    wait_with_trace(
+                        send_next_wait_handle,
+                        "p2p_send_wait_forward",
+                        phase="steady_post_forward",
+                        virtual_microbatch_id=forward_k,
+                        model_chunk_id=vp_stage,
+                    )
                 if fwd_wait_handles is not None:
                     send_next_wait_handle = (
                         fwd_wait_handles.pop("send_next")
@@ -1756,7 +1947,13 @@ def forward_backward_pipelining_with_interleaving(
                 # isend() copies asynchronously; wait until the copy is done before
                 # freeing the source buffer, otherwise the next PP stage gets corrupted data.
                 if send_next_wait_handle is not None and config.deallocate_pipeline_outputs:
-                    send_next_wait_handle.wait()
+                    wait_with_trace(
+                        send_next_wait_handle,
+                        "p2p_send_wait_forward",
+                        phase="steady_post_forward_deallocate",
+                        virtual_microbatch_id=forward_k,
+                        model_chunk_id=vp_stage,
+                    )
                     send_next_wait_handle = None
                 # assert fwd_wait_handles is not None
 
@@ -1782,11 +1979,23 @@ def forward_backward_pipelining_with_interleaving(
                             'should have registered recv next handle'
                         )
                         recv_next_wait_handle = recv_next_wait_handles.pop(0)
-                        recv_next_wait_handle.wait()
+                        wait_with_trace(
+                            recv_next_wait_handle,
+                            "p2p_recv_wait_backward",
+                            phase="steady_pre_backward",
+                            virtual_microbatch_id=backward_k,
+                            model_chunk_id=vp_stage,
+                        )
                     else:
                         if recv_next_wait_handles is not None and recv_next_wait_handles:
                             recv_next_wait_handle = recv_next_wait_handles.pop(0)
-                            recv_next_wait_handle.wait()
+                            wait_with_trace(
+                                recv_next_wait_handle,
+                                "p2p_recv_wait_backward",
+                                phase="steady_pre_backward",
+                                virtual_microbatch_id=backward_k,
+                                model_chunk_id=vp_stage,
+                            )
 
             # Async backward send / receive
             def pp_post_backward(input_tensor_grad, vp_stage=None):
@@ -1812,7 +2021,13 @@ def forward_backward_pipelining_with_interleaving(
                     )
                 )
                 if send_prev_wait_handle is not None:
-                    send_prev_wait_handle.wait()
+                    wait_with_trace(
+                        send_prev_wait_handle,
+                        "p2p_send_wait_backward",
+                        phase="steady_post_backward",
+                        virtual_microbatch_id=backward_k,
+                        model_chunk_id=vp_stage,
+                    )
                 if bwd_wait_handles is not None:
                     send_prev_wait_handle = (
                         bwd_wait_handles.pop("send_prev")
@@ -1902,7 +2117,11 @@ def forward_backward_pipelining_with_interleaving(
     if not forward_only:
         if bwd_wait_handles is not None:
             for bwd_wait_handle in bwd_wait_handles.values():
-                bwd_wait_handle.wait()
+                wait_with_trace(
+                    bwd_wait_handle,
+                    "p2p_wait_backward",
+                    phase="cooldown_enter",
+                )
 
         if are_all_microbatches_in_warmup:
             output_tensor_grads[num_model_chunks - 1].append(
@@ -1925,11 +2144,23 @@ def forward_backward_pipelining_with_interleaving(
                         'should have registered recv next handle'
                     )
                     recv_next_wait_handle = recv_next_wait_handles.pop(0)
-                    recv_next_wait_handle.wait()
+                    wait_with_trace(
+                        recv_next_wait_handle,
+                        "p2p_recv_wait_backward",
+                        phase="cooldown_pre_backward",
+                        virtual_microbatch_id=k,
+                        model_chunk_id=cur_model_chunk_id,
+                    )
                 else:
                     if recv_next_wait_handles is not None and recv_next_wait_handles:
                         recv_next_wait_handle = recv_next_wait_handles.pop(0)
-                        recv_next_wait_handle.wait()
+                        wait_with_trace(
+                            recv_next_wait_handle,
+                            "p2p_recv_wait_backward",
+                            phase="cooldown_pre_backward",
+                            virtual_microbatch_id=k,
+                            model_chunk_id=cur_model_chunk_id,
+                        )
 
             recv_next, next_backward_model_chunk_id = recv_tensor_from_previous_stage(
                 k, forward=False
@@ -1979,7 +2210,13 @@ def forward_backward_pipelining_with_interleaving(
                     )
 
                 if send_prev_wait_handle is not None:
-                    send_prev_wait_handle.wait()
+                    wait_with_trace(
+                        send_prev_wait_handle,
+                        "p2p_send_wait_backward",
+                        phase="cooldown_post_backward",
+                        virtual_microbatch_id=k,
+                        model_chunk_id=cur_model_chunk_id,
+                    )
                 if bwd_wait_handles is not None:
                     send_prev_wait_handle = (
                         bwd_wait_handles.pop("send_prev")
@@ -2003,7 +2240,11 @@ def forward_backward_pipelining_with_interleaving(
                     output_tensor_grads[next_backward_model_chunk_id].append(output_tensor_grad)
 
         if send_prev_wait_handle is not None:
-            send_prev_wait_handle.wait()
+            wait_with_trace(
+                send_prev_wait_handle,
+                "p2p_send_wait_backward",
+                phase="cooldown_exit",
+            )
 
         # Launch any remaining grad reductions.
         enable_grad_sync()
@@ -2052,6 +2293,7 @@ def forward_backward_pipelining_with_interleaving(
 
     if hasattr(config, 'cuda_graph_impl') and config.cuda_graph_impl == "local":
         create_cudagraphs()
+    strategy_trace.flush()
     nvtx_range_pop(suffix="misc")
 
     return forward_data_store

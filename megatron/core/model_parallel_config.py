@@ -376,6 +376,35 @@ class ModelParallelConfig:
     """This will be set automatically according to the pipeline layout, 
     and will be set to True if MTP is in a separate vpp stage."""
 
+    pipeline_strategy_policy: str = "default"
+    """Pipeline strategy synthesis policy.
+
+    default: preserve current Megatron schedule.
+    front-loaded: shrink the first virtual-pipeline scheduling group for a
+          dependency-safe schedule-shape rewrite.
+    """
+
+    pipeline_strategy_plan: Optional[str] = None
+    """Optional JSON StrategyPlan path. If set, the plan is verified before use."""
+
+    pipeline_strategy_runtime: str = "fixed"
+    """Pipeline strategy runtime: fixed or conservative ready-set."""
+
+    pipeline_strategy_search_budget: int = 16
+    """Offline candidate budget for pipeline strategy search tools."""
+
+    pipeline_strategy_memory_budget_mb: Optional[float] = None
+    """Optional memory budget used by StrategyVerifier."""
+
+    pipeline_strategy_agent_mode: str = "off"
+    """Agent mode for offline pipeline strategy tools: off, heuristic, or llm."""
+
+    pipeline_strategy_profile_steps: int = 0
+    """Number of steps to profile for strategy traces."""
+
+    pipeline_strategy_trace_path: Optional[str] = None
+    """Optional JSON trace path for schedule/profile events."""
+
     ###################
     # CPU Offloading
     ###################

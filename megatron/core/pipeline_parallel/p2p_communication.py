@@ -1,6 +1,8 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 
+import time
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -12,6 +14,54 @@ from megatron.core.utils import nvtx_decorator
 
 # Types
 Shape = Union[List[int], torch.Size]
+
+
+@dataclass(frozen=True)
+class PipelineMessageTag:
+    """Stable metadata for future tagged P2P matching.
+
+    The current runtime keeps Megatron's conservative send/recv order. This tag
+    object is intentionally metadata-only for now so strategy plans can describe
+    legal message identity before the backend grows true tagged matching.
+    """
+
+    pp_rank: int
+    vp_chunk: int
+    microbatch: int
+    direction: str
+    tensor_kind: str
+
+
+class _P2PTraceTimer:
+    """Small CUDA-aware timer used only when strategy tracing is enabled."""
+
+    def __init__(self) -> None:
+        self._use_cuda = torch.cuda.is_available()
+        self._start_event = None
+        self._end_event = None
+        self._start_time = 0.0
+
+    def __enter__(self) -> "_P2PTraceTimer":
+        if self._use_cuda:
+            self._start_event = torch.cuda.Event(enable_timing=True)
+            self._end_event = torch.cuda.Event(enable_timing=True)
+            self._start_event.record()
+        else:
+            self._start_time = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._use_cuda:
+            self._end_event.record()
+            self._end_event.synchronize()
+        else:
+            self._start_time = (time.perf_counter() - self._start_time) * 1000.0
+
+    @property
+    def elapsed_ms(self) -> float:
+        if self._use_cuda:
+            return float(self._start_event.elapsed_time(self._end_event))
+        return float(self._start_time)
 
 
 def _batched_p2p_ops(
@@ -182,6 +232,19 @@ class P2PCommunicator:
     def current_stage(self) -> int:
         """Return current pipeline stage index (0-indexed)."""
         return self.pp_group.rank()
+
+    def _trace_p2p(self, name: str, elapsed_ms: float, **metadata) -> None:
+        trace_hook = getattr(self.config, "pipeline_strategy_trace_hook", None)
+        if trace_hook is None:
+            return
+        trace_hook(
+            name,
+            elapsed_ms,
+            pp_group_rank=self.current_stage,
+            prev_rank=self.prev_rank,
+            next_rank=self.next_rank,
+            **metadata,
+        )
 
     def _communicate_shapes(self, tensor_send_next, tensor_send_prev, recv_prev, recv_next):
         """Communicate tensor shapes between stages. Used to communicate
@@ -394,23 +457,57 @@ class P2PCommunicator:
         if tensor_recv_next_func is not None:
             tensor_recv_next = tensor_recv_next_func()
 
-        p2p_reqs = p2p_func(
-            tensor_send_prev=tensor_send_prev,
-            tensor_recv_prev=tensor_recv_prev,
-            tensor_send_next=tensor_send_next,
-            tensor_recv_next=tensor_recv_next,
-            group=pp_group,
-            prev_pipeline_rank=prev_rank,
-            next_pipeline_rank=next_rank,
-        )
+        trace_enabled = getattr(config, "pipeline_strategy_trace_hook", None) is not None
+        trace_metadata = {
+            "send_prev": tensor_send_prev is not None,
+            "recv_prev": tensor_recv_prev is not None,
+            "send_next": tensor_send_next is not None,
+            "recv_next": tensor_recv_next is not None,
+            "wait_on_reqs": wait_on_reqs,
+            "batch_p2p_comm": config.batch_p2p_comm,
+            "ring_exchange": config.use_ring_exchange_p2p,
+        }
+        if trace_enabled:
+            with _P2PTraceTimer() as issue_timer:
+                p2p_reqs = p2p_func(
+                    tensor_send_prev=tensor_send_prev,
+                    tensor_recv_prev=tensor_recv_prev,
+                    tensor_send_next=tensor_send_next,
+                    tensor_recv_next=tensor_recv_next,
+                    group=pp_group,
+                    prev_pipeline_rank=prev_rank,
+                    next_pipeline_rank=next_rank,
+                )
+            self._trace_p2p("p2p_comm_issue", issue_timer.elapsed_ms, **trace_metadata)
+        else:
+            p2p_reqs = p2p_func(
+                tensor_send_prev=tensor_send_prev,
+                tensor_recv_prev=tensor_recv_prev,
+                tensor_send_next=tensor_send_next,
+                tensor_recv_next=tensor_recv_next,
+                group=pp_group,
+                prev_pipeline_rank=prev_rank,
+                next_pipeline_rank=next_rank,
+            )
         if isinstance(p2p_reqs, list):
             reqs.extend(p2p_reqs)
         else:
             reqs.update(p2p_reqs)
 
         if wait_on_reqs and len(reqs) > 0:
-            for req in reqs if isinstance(reqs, list) else reqs.values():
-                req.wait()
+            if trace_enabled:
+                with _P2PTraceTimer() as wait_timer:
+                    for req in reqs if isinstance(reqs, list) else reqs.values():
+                        req.wait()
+                self._trace_p2p(
+                    "p2p_comm_wait",
+                    wait_timer.elapsed_ms,
+                    wait_ms=wait_timer.elapsed_ms,
+                    **trace_metadata,
+                )
+            else:
+                for req in reqs if isinstance(reqs, list) else reqs.values():
+                    req.wait()
             reqs = None
 
         if config.batch_p2p_comm and config.batch_p2p_sync:

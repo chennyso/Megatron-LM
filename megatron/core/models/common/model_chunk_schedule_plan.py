@@ -6,6 +6,8 @@ from typing import Any, Callable, Optional
 import torch
 from torch import Tensor
 
+from megatron.core.pipeline_parallel.strategy_synthesizer import CudaTimer
+
 from megatron.core.enums import Fp8Recipe
 from megatron.core.fp8_utils import get_fp8_context
 from megatron.core.pipeline_parallel.utils import (
@@ -268,7 +270,16 @@ class TransformerLayerSchedulePlan:
                 f_input = f_layer.moe_dispatch.forward(f_input)
 
         if b_layer is not None:
-            b_layer.mlp.backward_dw()
+            with CudaTimer() as wgrad_timer:
+                b_layer.mlp.backward_dw()
+            trace_hook = getattr(b_layer.config, "pipeline_strategy_trace_hook", None)
+            if trace_hook is not None:
+                trace_hook(
+                    "wgrad_compute",
+                    wgrad_timer.elapsed_ms,
+                    module="mlp",
+                    layer_number=getattr(b_layer.layer, "layer_number", None),
+                )
             b_grad = b_layer.moe_dispatch.backward(b_grad)
 
         if b_layer is not None and b_layer.config.ep_overlap_early_attn_memory_release:
@@ -292,7 +303,16 @@ class TransformerLayerSchedulePlan:
         # Delay the last attn_dw in backward pass (attn_dw of the first layer)
         # for overlapping with the p2p comm
         if b_layer is not None and not is_last_layer_in_bwd:
-            b_layer.attn.backward_dw()
+            with CudaTimer() as wgrad_timer:
+                b_layer.attn.backward_dw()
+            trace_hook = getattr(b_layer.config, "pipeline_strategy_trace_hook", None)
+            if trace_hook is not None:
+                trace_hook(
+                    "wgrad_compute",
+                    wgrad_timer.elapsed_ms,
+                    module="attn",
+                    layer_number=getattr(b_layer.layer, "layer_number", None),
+                )
 
         return f_input, b_grad
 
