@@ -1241,7 +1241,13 @@ def forward_backward_pipelining_with_interleaving(
     )
     strategy_trace_path = getattr(config, "pipeline_strategy_trace_path", None)
     if strategy_trace_path:
-        strategy_trace_path = strategy_trace_path.format(pp_rank=pipeline_parallel_rank)
+        global_rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        strategy_trace_path = strategy_trace_path.format(
+            rank=global_rank,
+            pp_rank=pipeline_parallel_rank,
+            tp_rank=parallel_state.get_tensor_model_parallel_rank(),
+            dp_rank=parallel_state.get_data_parallel_rank(),
+        )
     strategy_trace = StrategyTrace(
         enabled=bool(strategy_trace_path),
         pp_rank=pipeline_parallel_rank,
