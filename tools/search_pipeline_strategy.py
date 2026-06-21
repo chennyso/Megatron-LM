@@ -728,6 +728,41 @@ def _build_task_dag(synth, events: List[dict], args, vpp_size: int) -> Tuple[Any
     return tuple(tasks)
 
 
+def _task_duration_ms(task: Any) -> float:
+    return max(0.0, float(task.est_compute_ms) + float(task.est_comm_ms))
+
+
+def _task_dag_critical_path_ms(tasks: Tuple[Any, ...]) -> float:
+    """Compute the longest dependency path over the strategy task IR.
+
+    This is the static counterpart to trace-level critical-path span. It gives
+    the search report a schedule-theoretic signal that is independent from
+    timestamp noise and can be recomputed for every legal rewrite candidate.
+    """
+
+    task_by_id = {task.task_id: task for task in tasks}
+    memo: Dict[str, float] = {}
+    visiting: set[str] = set()
+
+    def visit(task_id: str) -> float:
+        if task_id in memo:
+            return memo[task_id]
+        if task_id in visiting:
+            raise ValueError(f"cycle detected in strategy task DAG at {task_id}")
+        visiting.add(task_id)
+        task = task_by_id[task_id]
+        dep_path = 0.0
+        for dep in task.deps:
+            if dep in task_by_id:
+                dep_path = max(dep_path, visit(dep))
+        visiting.remove(task_id)
+        total = dep_path + _task_duration_ms(task)
+        memo[task_id] = total
+        return total
+
+    return max((visit(task.task_id) for task in tasks), default=0.0)
+
+
 def _estimate_step_time(
     events: List[dict],
     group_size: int,
@@ -818,6 +853,7 @@ def _build_candidate(
         budget=budget,
     )
     tasks = _build_task_dag(synth, events, args, vpp_size)
+    task_dag_critical_path = _task_dag_critical_path_ms(tasks)
     estimated_peak_memory_mb = _estimate_memory(events)
     runtime_policy = {"runtime": args.runtime, "allow_out_of_order_p2p": False}
     plan = synth.strategy_candidate_to_plan(
@@ -844,6 +880,7 @@ def _build_candidate(
             "bcp_fb_delay_steps": bcp.fb_delay_steps,
             "bcp_chunk_skew": bcp.chunk_skew,
             "bcp_p2p_credit_pressure": bcp.p2p_credit_pressure,
+            "bcp_static_task_dag_critical_path_ms": task_dag_critical_path,
             "estimated_throughput_score": 1.0 / max(step_time, 1e-6),
             "estimated_peak_memory_mb": estimated_peak_memory_mb,
             "source": "search_pipeline_strategy.py",

@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ def _load_pipeline_strategy_agent():
     spec = importlib.util.spec_from_file_location("pipeline_strategy_agent", module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -20,6 +22,18 @@ def _load_search_pipeline_strategy():
     spec = importlib.util.spec_from_file_location("search_pipeline_strategy", module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_effective_overlap():
+    repo_root = Path(__file__).resolve().parents[3]
+    module_path = repo_root / "tools" / "analyze_effective_overlap.py"
+    spec = importlib.util.spec_from_file_location("analyze_effective_overlap", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -183,3 +197,45 @@ def test_trace_diagnostics_reports_overlap_categories():
     assert diagnostics["overlap"]["useful_overlap_ms"] > 0
     assert diagnostics["overlap"]["exposed_wait_ms"] == 3.0
     assert diagnostics["hot_chunks"]
+
+
+def test_task_dag_critical_path_uses_dependencies():
+    module = _load_search_pipeline_strategy()
+    tasks = (
+        SimpleNamespace(task_id="F:r0:c0:m0", est_compute_ms=5.0, est_comm_ms=0.0, deps=()),
+        SimpleNamespace(
+            task_id="SEND_F:r0:c0:m0",
+            est_compute_ms=0.0,
+            est_comm_ms=2.0,
+            deps=("F:r0:c0:m0",),
+        ),
+        SimpleNamespace(
+            task_id="F:r1:c0:m0",
+            est_compute_ms=7.0,
+            est_comm_ms=0.0,
+            deps=("SEND_F:r0:c0:m0",),
+        ),
+        SimpleNamespace(task_id="unrelated", est_compute_ms=3.0, est_comm_ms=0.0, deps=()),
+    )
+
+    assert module._task_dag_critical_path_ms(tasks) == 14.0
+
+
+def test_effective_overlap_classifies_useful_harmful_and_fake():
+    module = _load_effective_overlap()
+    events = [
+        module.TimelineEvent("gemm", "compute", 0.0, 10.0),
+        module.TimelineEvent("gemm", "compute", 20.0, 35.0),
+        module.TimelineEvent("p2p_recv", "comm", 22.0, 30.0),
+        module.TimelineEvent("p2p_send", "comm", 40.0, 45.0),
+    ]
+
+    report = module.classify_effective_overlap(
+        events,
+        harmful_slowdown_threshold=0.2,
+    )
+
+    assert report.harmful_overlap_ms == 8.0
+    assert report.fake_overlap_ms == 5.0
+    assert report.useful_overlap_ms == 0.0
+    assert report.harmful_overlap_ratio == 1.0
