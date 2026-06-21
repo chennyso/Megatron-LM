@@ -1,6 +1,7 @@
 import importlib.util
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _load_pipeline_strategy_agent():
@@ -115,3 +116,70 @@ def test_bcp_stats_tracks_critical_path_and_budget_pressure():
     assert loose.activation_peak_mb == 120.0
     assert loose.fb_delay_steps > 0
     assert tight.score > loose.score
+
+
+def test_bcp_candidate_specs_include_rewrite_rationale_and_sorting():
+    module = _load_search_pipeline_strategy()
+    args = SimpleNamespace(
+        num_model_chunks=2,
+        num_layers=16,
+        pipeline_parallel_size=2,
+        microbatch_group_size=2,
+        candidate_budget=4,
+    )
+    proposal = SimpleNamespace(target={"search": "boundary_aware_layout"})
+    diagnostics = {
+        "overlap": {"exposed_wait_ms": 20.0},
+        "hot_chunks": [{"chunk": 0, "pressure": 10.0}, {"chunk": 1, "pressure": 5.0}],
+    }
+
+    specs = module._build_candidate_specs(args, [proposal], diagnostics)
+
+    assert specs
+    assert specs == sorted(specs, key=lambda item: item.quick_score)
+    assert any(spec.rewrite == "front_loaded_group" for spec in specs)
+    assert all(spec.rationale for spec in specs)
+
+
+def test_trace_diagnostics_reports_overlap_categories():
+    module = _load_search_pipeline_strategy()
+    events = [
+        {
+            "name": "forward_step",
+            "pp_rank": 0,
+            "model_chunk_id": 0,
+            "microbatch_id": 0,
+            "elapsed_ms": 10.0,
+            "start_ts": 0.000,
+            "end_ts": 0.010,
+            "memory_mb": 100.0,
+        },
+        {
+            "name": "p2p_comm_wait",
+            "pp_rank": 0,
+            "model_chunk_id": 0,
+            "microbatch_id": 0,
+            "elapsed_ms": 4.0,
+            "wait_ms": 0.0,
+            "start_ts": 0.002,
+            "end_ts": 0.006,
+            "memory_mb": 100.0,
+        },
+        {
+            "name": "p2p_recv_wait_forward",
+            "pp_rank": 0,
+            "model_chunk_id": 1,
+            "microbatch_id": 0,
+            "elapsed_ms": 3.0,
+            "wait_ms": 3.0,
+            "start_ts": 0.010,
+            "end_ts": 0.013,
+            "memory_mb": 120.0,
+        },
+    ]
+
+    diagnostics = module._trace_diagnostics(events, vpp_size=2)
+
+    assert diagnostics["overlap"]["useful_overlap_ms"] > 0
+    assert diagnostics["overlap"]["exposed_wait_ms"] == 3.0
+    assert diagnostics["hot_chunks"]

@@ -41,6 +41,40 @@ class BcpStats:
     score: float
 
 
+@dataclass(frozen=True)
+class OverlapStats:
+    """Profiler-derived overlap categories used by BCP reports."""
+
+    useful_overlap_ms: float
+    harmful_overlap_ms: float
+    fake_overlap_ms: float
+    exposed_wait_ms: float
+
+
+@dataclass(frozen=True)
+class CandidateSpec:
+    """Search-space point plus the rewrite that produced it."""
+
+    policy: str
+    group_size: int
+    vpp_size: int
+    layout: str | None
+    placement: Tuple[int, ...]
+    rewrite: str
+    rationale: str
+    quick_score: float = 0.0
+
+
+BCP_REWRITE_ALGEBRA = {
+    "baseline": "Preserve the default Megatron interleaved VPP schedule.",
+    "front_loaded_group": "Shrink the first VPP group to reduce warmup critical-path exposure.",
+    "change_group_size": "Change microbatch_group_size_per_vp_stage under Megatron legality checks.",
+    "change_vp_degree": "Search a different virtual pipeline degree when layer divisibility permits.",
+    "boundary_layout": "Move safe layer boundaries to reduce hot chunk or P2P boundary pressure.",
+    "node_local_placement": "Prefer neighbor placement that keeps critical PP edges local when possible.",
+}
+
+
 def _event_metadata(event: dict) -> dict:
     metadata = event.get("metadata")
     return metadata if isinstance(metadata, dict) else {}
@@ -256,6 +290,111 @@ def _bcp_stats(
     )
 
 
+def _overlap_stats(events: List[dict]) -> OverlapStats:
+    """Classify trace overlap into useful, harmful, fake, and exposed wait.
+
+    This is a conservative trace-level approximation. Nsight-level kernel
+    attribution can replace this later without changing report schema.
+    """
+
+    timed = list(_iter_timed_events(events))
+    compute = [
+        event
+        for event in timed
+        if str(event.get("name", ""))
+        in {"forward_step", "backward_step", "dgrad_compute", "wgrad_compute"}
+    ]
+    comm = [event for event in timed if str(event.get("name", "")).startswith("p2p_")]
+    useful = 0.0
+    harmful = 0.0
+    fake = 0.0
+    for comm_event in comm:
+        c_start = float(comm_event["start_ts"])
+        c_end = float(comm_event["end_ts"])
+        comm_ms = max(0.0, (c_end - c_start) * 1000.0)
+        overlap_ms = 0.0
+        for compute_event in compute:
+            overlap_start = max(c_start, float(compute_event["start_ts"]))
+            overlap_end = min(c_end, float(compute_event["end_ts"]))
+            overlap_ms += max(0.0, (overlap_end - overlap_start) * 1000.0)
+        wait_ms = float(comm_event.get("wait_ms", 0.0))
+        if overlap_ms <= 0:
+            fake += comm_ms
+        elif wait_ms > 0.1 * max(comm_ms, 1e-6):
+            harmful += min(overlap_ms, comm_ms)
+        else:
+            useful += min(overlap_ms, comm_ms)
+
+    exposed_wait = sum(
+        float(event.get("wait_ms", event.get("elapsed_ms", 0.0)))
+        for event in events
+        if str(event.get("name", "")).startswith("p2p_") and "wait" in str(event.get("name", ""))
+    )
+    return OverlapStats(
+        useful_overlap_ms=useful,
+        harmful_overlap_ms=harmful,
+        fake_overlap_ms=fake,
+        exposed_wait_ms=exposed_wait,
+    )
+
+
+def _trace_diagnostics(events: List[dict], vpp_size: int) -> Dict[str, Any]:
+    pressure = _chunk_pressure(events, vpp_size)
+    hot_chunks = sorted(pressure.items(), key=lambda item: item[1], reverse=True)
+    rank_totals: Dict[int, float] = {}
+    p2p_by_name: Dict[str, float] = {}
+    for event in events:
+        rank = _event_rank(event)
+        elapsed = float(event.get("elapsed_ms", 0.0))
+        rank_totals[rank] = rank_totals.get(rank, 0.0) + elapsed
+        name = str(event.get("name", ""))
+        if name.startswith("p2p_"):
+            p2p_by_name[name] = p2p_by_name.get(name, 0.0) + float(event.get("wait_ms", elapsed))
+    overlap = _overlap_stats(events)
+    return {
+        "critical_path_ms": _critical_path_ms(events),
+        "activation_peak_mb": _estimate_memory(events),
+        "fb_delay_steps": _estimate_fb_delay_steps(events),
+        "p2p_credit_pressure": _p2p_credit_pressure(events),
+        "rank_totals_ms": dict(sorted(rank_totals.items())),
+        "hot_chunks": [
+            {"chunk": chunk, "pressure": value}
+            for chunk, value in hot_chunks[: min(5, len(hot_chunks))]
+        ],
+        "p2p_wait_by_name_ms": dict(sorted(p2p_by_name.items())),
+        "overlap": asdict(overlap),
+    }
+
+
+def _candidate_quick_score(
+    *,
+    rewrite: str,
+    group_size: int,
+    vpp_size: int,
+    baseline_group_size: int,
+    baseline_vpp_size: int,
+    has_layout: bool,
+    has_placement: bool,
+    diagnostics: Dict[str, Any],
+) -> float:
+    score = 100.0
+    exposed_wait = float(diagnostics["overlap"]["exposed_wait_ms"])
+    chunk_count = max(1, len(diagnostics.get("hot_chunks", [])))
+    if rewrite == "front_loaded_group":
+        score -= 4.0 + min(8.0, exposed_wait * 0.2)
+    if rewrite == "change_group_size" and group_size != baseline_group_size:
+        score -= 3.0
+        if group_size >= 2:
+            score -= 1.0
+    if rewrite == "change_vp_degree" and vpp_size != baseline_vpp_size:
+        score -= 4.0 / chunk_count
+    if has_layout:
+        score -= 5.0
+    if has_placement:
+        score -= 2.0
+    return score
+
+
 def _build_uniform_layout(num_layers: int, pipeline_parallel_size: int, vpp_size: int) -> str:
     total_stages = pipeline_parallel_size * max(vpp_size, 1)
     base = num_layers // total_stages
@@ -388,6 +527,92 @@ def _candidate_group_sizes(args, proposals: List[Any], vpp_size: int) -> List[in
             seen.add(item)
             deduped.append(item)
     return deduped
+
+
+def _build_candidate_specs(
+    args,
+    proposals: List[Any],
+    diagnostics: Dict[str, Any],
+) -> List[CandidateSpec]:
+    placements = _candidate_placements(args, proposals)
+    vp_sizes = _candidate_vp_sizes(args, proposals)
+    specs: List[CandidateSpec] = [
+        CandidateSpec(
+            policy="default",
+            group_size=args.microbatch_group_size,
+            vpp_size=args.num_model_chunks,
+            layout=None,
+            placement=_default_placement(args.pipeline_parallel_size),
+            rewrite="baseline",
+            rationale=BCP_REWRITE_ALGEBRA["baseline"],
+        ),
+        CandidateSpec(
+            policy="front-loaded",
+            group_size=args.microbatch_group_size,
+            vpp_size=args.num_model_chunks,
+            layout=None,
+            placement=_default_placement(args.pipeline_parallel_size),
+            rewrite="front_loaded_group",
+            rationale=BCP_REWRITE_ALGEBRA["front_loaded_group"],
+        ),
+    ]
+    prioritized_vp_sizes = [item for item in vp_sizes if item != args.num_model_chunks]
+    prioritized_vp_sizes.extend(item for item in vp_sizes if item == args.num_model_chunks)
+    for vpp_size in prioritized_vp_sizes:
+        layouts = _candidate_layouts(args, proposals, vpp_size)
+        group_sizes = _candidate_group_sizes(args, proposals, vpp_size)
+        for group_size in group_sizes:
+            for layout in layouts:
+                for placement in placements:
+                    rewrite = "change_group_size"
+                    if vpp_size != args.num_model_chunks:
+                        rewrite = "change_vp_degree"
+                    if layout:
+                        rewrite = "boundary_layout"
+                    if placement != _default_placement(args.pipeline_parallel_size):
+                        rewrite = "node_local_placement"
+                    specs.append(
+                        CandidateSpec(
+                            policy="default",
+                            group_size=group_size,
+                            vpp_size=vpp_size,
+                            layout=layout,
+                            placement=placement,
+                            rewrite=rewrite,
+                            rationale=BCP_REWRITE_ALGEBRA[rewrite],
+                        )
+                    )
+
+    deduped_specs: List[CandidateSpec] = []
+    seen_specs = set()
+    for spec in specs:
+        key = (spec.policy, spec.group_size, spec.vpp_size, spec.layout, spec.placement)
+        if key in seen_specs:
+            continue
+        seen_specs.add(key)
+        quick_score = _candidate_quick_score(
+            rewrite=spec.rewrite,
+            group_size=spec.group_size,
+            vpp_size=spec.vpp_size,
+            baseline_group_size=args.microbatch_group_size,
+            baseline_vpp_size=args.num_model_chunks,
+            has_layout=bool(spec.layout),
+            has_placement=spec.placement != _default_placement(args.pipeline_parallel_size),
+            diagnostics=diagnostics,
+        )
+        deduped_specs.append(
+            CandidateSpec(
+                policy=spec.policy,
+                group_size=spec.group_size,
+                vpp_size=spec.vpp_size,
+                layout=spec.layout,
+                placement=spec.placement,
+                rewrite=spec.rewrite,
+                rationale=spec.rationale,
+                quick_score=quick_score,
+            )
+        )
+    return sorted(deduped_specs, key=lambda item: item.quick_score)[: max(1, args.candidate_budget)]
 
 
 def _build_task_dag(synth, events: List[dict], args, vpp_size: int) -> Tuple[Any, ...]:
@@ -731,70 +956,60 @@ def main() -> None:
         bottlenecks = agent.attribute_bottlenecks(events)
         proposals = agent.propose_rewrites(bottlenecks)
 
-    placements = _candidate_placements(args, proposals)
-    vp_sizes = _candidate_vp_sizes(args, proposals)
-    candidate_specs = [
-        (
-            "default",
-            args.microbatch_group_size,
-            args.num_model_chunks,
-            None,
-            _default_placement(args.pipeline_parallel_size),
-        )
-    ]
-    candidate_specs.append(
-        (
-            "front-loaded",
-            args.microbatch_group_size,
-            args.num_model_chunks,
-            None,
-            _default_placement(args.pipeline_parallel_size),
-        )
-    )
-    prioritized_vp_sizes = [item for item in vp_sizes if item != args.num_model_chunks]
-    prioritized_vp_sizes.extend(item for item in vp_sizes if item == args.num_model_chunks)
-    for vpp_size in prioritized_vp_sizes:
-        layouts = _candidate_layouts(args, proposals, vpp_size)
-        group_sizes = _candidate_group_sizes(args, proposals, vpp_size)
-        for group_size in group_sizes:
-            for layout in layouts:
-                for placement in placements:
-                    candidate_specs.append(("default", group_size, vpp_size, layout, placement))
-    deduped_specs = []
-    seen_specs = set()
-    for spec in candidate_specs:
-        key = (spec[0], spec[1], spec[2], spec[3], spec[4])
-        if key not in seen_specs:
-            seen_specs.add(key)
-            deduped_specs.append(spec)
-    candidate_specs = deduped_specs[: max(1, args.candidate_budget)]
+    diagnostics = _trace_diagnostics(events, args.num_model_chunks)
+    candidate_specs = _build_candidate_specs(args, proposals, diagnostics)
 
     accepted = []
     rejected = []
     proposal_payload = [asdict(item) for item in proposals]
-    for policy, group_size, vpp_size, layout, placement in candidate_specs:
+    for spec in candidate_specs:
         try:
             plan = _build_candidate(
                 synth,
-                policy,
-                group_size,
-                vpp_size,
-                layout,
-                placement,
+                spec.policy,
+                spec.group_size,
+                spec.vpp_size,
+                spec.layout,
+                spec.placement,
                 args,
                 proposal_payload,
                 events,
                 bcp_budget,
             )
+            metadata = dict(plan.metadata)
+            metadata.update(
+                {
+                    "rewrite": spec.rewrite,
+                    "rewrite_rationale": spec.rationale,
+                    "candidate_quick_score": spec.quick_score,
+                }
+            )
+            plan = plan.__class__(
+                name=plan.name,
+                schedule_table=plan.schedule_table,
+                pipeline_layout=plan.pipeline_layout,
+                num_virtual_stages_per_pipeline_rank=plan.num_virtual_stages_per_pipeline_rank,
+                placement=plan.placement,
+                microbatch_group_size=plan.microbatch_group_size,
+                checkpoint_policy=plan.checkpoint_policy,
+                wgrad_policy=plan.wgrad_policy,
+                runtime_policy=plan.runtime_policy,
+                rewrites=plan.rewrites,
+                tasks=plan.tasks,
+                metadata=metadata,
+            )
             accepted.append(plan)
         except Exception as exc:  # noqa: BLE001 - report verifier/search failures.
             rejected.append(
                 {
-                    "policy": policy,
-                    "group_size": group_size,
-                    "vpp_size": vpp_size,
-                    "layout": layout,
-                    "placement": list(placement),
+                    "policy": spec.policy,
+                    "group_size": spec.group_size,
+                    "vpp_size": spec.vpp_size,
+                    "layout": spec.layout,
+                    "placement": list(spec.placement),
+                    "rewrite": spec.rewrite,
+                    "rationale": spec.rationale,
+                    "quick_score": spec.quick_score,
                     "reason": str(exc),
                 }
             )
@@ -812,6 +1027,9 @@ def main() -> None:
         "proposals": proposal_payload,
         "objective": args.objective,
         "bcp_budget": asdict(bcp_budget),
+        "bcp_diagnostics": diagnostics,
+        "rewrite_algebra": BCP_REWRITE_ALGEBRA,
+        "candidate_specs": [asdict(item) for item in candidate_specs],
         "accepted": [synth.strategy_plan_to_dict(item) for item in accepted],
         "rejected": rejected,
         "best": synth.strategy_plan_to_dict(best),
