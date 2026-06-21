@@ -51,3 +51,67 @@ def test_boundary_aware_layout_never_emits_empty_stage():
     layout = module._build_boundary_aware_layout(128, pipeline_parallel_size=8, vpp_size=4)
     assert layout is not None
     assert all(segment.count("t") >= 1 for segment in layout.split("|"))
+
+
+def test_bcp_stats_tracks_critical_path_and_budget_pressure():
+    module = _load_search_pipeline_strategy()
+    events = [
+        {
+            "name": "forward_step",
+            "pp_rank": 0,
+            "model_chunk_id": 0,
+            "microbatch_id": 0,
+            "elapsed_ms": 4.0,
+            "start_ts": 0.000,
+            "end_ts": 0.004,
+            "memory_mb": 100.0,
+        },
+        {
+            "name": "p2p_recv_wait_forward",
+            "pp_rank": 0,
+            "model_chunk_id": 0,
+            "microbatch_id": 0,
+            "elapsed_ms": 3.0,
+            "wait_ms": 3.0,
+            "start_ts": 0.004,
+            "end_ts": 0.007,
+            "memory_mb": 110.0,
+        },
+        {
+            "name": "backward_step",
+            "pp_rank": 0,
+            "model_chunk_id": 0,
+            "microbatch_id": 0,
+            "elapsed_ms": 5.0,
+            "start_ts": 0.007,
+            "end_ts": 0.012,
+            "memory_mb": 120.0,
+        },
+    ]
+
+    loose = module._bcp_stats(
+        events,
+        group_size=4,
+        policy="default",
+        vpp_size=2,
+        baseline_vpp_size=2,
+        layout=None,
+        runtime="fixed",
+        budget=module.BcpBudget(),
+    )
+    tight = module._bcp_stats(
+        events,
+        group_size=4,
+        policy="default",
+        vpp_size=2,
+        baseline_vpp_size=2,
+        layout=None,
+        runtime="fixed",
+        budget=module.BcpBudget(activation_peak_mb=64.0, p2p_credit=0, fb_delay_steps=1),
+    )
+
+    assert loose.critical_path_ms > 0
+    assert loose.exposed_p2p_wait_ms == 3.0
+    assert loose.activation_peak_mb == 120.0
+    assert loose.fb_delay_steps > 0
+    assert tight.score > loose.score

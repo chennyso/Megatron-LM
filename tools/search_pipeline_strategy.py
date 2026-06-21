@@ -9,9 +9,59 @@ import argparse
 import importlib.util
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
+
+
+@dataclass(frozen=True)
+class BcpBudget:
+    """Budgets used by bounded-critical-path VPP search.
+
+    These are soft budgets in the offline searcher. The executable Megatron
+    verifier still guards hard schedule legality; this model ranks candidates by
+    how much critical-path exposure they are expected to create.
+    """
+
+    activation_peak_mb: float | None = None
+    p2p_credit: int | None = None
+    fb_delay_steps: int | None = None
+
+
+@dataclass(frozen=True)
+class BcpStats:
+    """Critical-path pressure summary for a candidate VPP strategy."""
+
+    critical_path_ms: float
+    exposed_p2p_wait_ms: float
+    activation_peak_mb: float
+    fb_delay_steps: int
+    chunk_skew: float
+    p2p_credit_pressure: int
+    score: float
+
+
+def _event_metadata(event: dict) -> dict:
+    metadata = event.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _event_rank(event: dict) -> int:
+    metadata = _event_metadata(event)
+    raw_rank = event.get("pp_rank", event.get("pp_group_rank", metadata.get("pp_group_rank", 0)))
+    return int(raw_rank or 0)
+
+
+def _event_chunk(event: dict) -> int:
+    metadata = _event_metadata(event)
+    raw = event.get("model_chunk_id", metadata.get("model_chunk_id", metadata.get("vp_chunk", 0)))
+    return int(raw if raw is not None else 0)
+
+
+def _event_microbatch(event: dict) -> int:
+    metadata = _event_metadata(event)
+    raw = event.get("microbatch_id", metadata.get("microbatch_id", metadata.get("microbatch", 0)))
+    return int(raw if raw is not None else 0)
 
 
 def _load_module(name: str, rel_path: str):
@@ -25,11 +75,7 @@ def _load_module(name: str, rel_path: str):
 
 
 def _event_key(event: dict) -> Tuple[int, int, int]:
-    return (
-        int(event.get("pp_rank", 0) or 0),
-        int(event.get("model_chunk_id", 0) or 0),
-        int(event.get("microbatch_id", 0) or 0),
-    )
+    return (_event_rank(event), _event_chunk(event), _event_microbatch(event))
 
 
 def _average_event_time(events: List[dict], names: set[str], default_ms: float) -> Dict[Tuple[int, int, int], float]:
@@ -57,6 +103,157 @@ def _lookup_time(table: Dict[Tuple[int, int, int], float], rank: int, chunk: int
 def _estimate_memory(events: List[dict]) -> float:
     memories = [float(event["memory_mb"]) for event in events if event.get("memory_mb") is not None]
     return max(memories) if memories else 0.0
+
+
+def _iter_timed_events(events: Iterable[dict]) -> Iterable[dict]:
+    for event in events:
+        if event.get("start_ts") is None or event.get("end_ts") is None:
+            continue
+        if float(event.get("end_ts", 0.0)) < float(event.get("start_ts", 0.0)):
+            continue
+        yield event
+
+
+def _estimate_fb_delay_steps(events: List[dict]) -> int:
+    """Estimate the largest F/B separation in per-rank event order.
+
+    Megatron traces are not yet a full tagged task DAG. This proxy gives the
+    BCP objective a conservative signal: large gaps between a chunk's forward
+    and backward events indicate activation residency and version-delay risk.
+    """
+
+    forward_index: Dict[Tuple[int, int, int], int] = {}
+    max_delay = 0
+    for idx, event in enumerate(events):
+        key = _event_key(event)
+        name = str(event.get("name", ""))
+        if name in {"forward_step", "F"}:
+            forward_index.setdefault(key, idx)
+        elif name in {"backward_step", "B_DGRAD", "dgrad_compute", "wgrad_compute"}:
+            if key in forward_index:
+                max_delay = max(max_delay, idx - forward_index[key])
+    return max_delay
+
+
+def _p2p_credit_pressure(events: List[dict]) -> int:
+    """Approximate maximum outstanding P2P requests from trace issue/wait events."""
+
+    timed = sorted(
+        _iter_timed_events(events),
+        key=lambda event: (float(event.get("start_ts", 0.0)), float(event.get("end_ts", 0.0))),
+    )
+    active: List[float] = []
+    peak = 0
+    for event in timed:
+        name = str(event.get("name", ""))
+        if not name.startswith("p2p_"):
+            continue
+        start = float(event["start_ts"])
+        end = float(event["end_ts"])
+        active = [item for item in active if item > start]
+        active.append(end)
+        peak = max(peak, len(active))
+    return peak
+
+
+def _chunk_pressure(events: List[dict], vpp_size: int) -> Dict[int, float]:
+    pressure = {chunk: 0.0 for chunk in range(max(vpp_size, 1))}
+    for event in events:
+        chunk = _event_chunk(event)
+        if chunk not in pressure:
+            continue
+        elapsed = float(event.get("elapsed_ms", 0.0))
+        wait = float(event.get("wait_ms", 0.0))
+        memory = float(event.get("memory_mb", 0.0) or 0.0)
+        pressure[chunk] += elapsed + wait + 0.005 * memory
+    return pressure
+
+
+def _critical_path_ms(events: List[dict]) -> float:
+    timed_events = list(_iter_timed_events(events))
+    if timed_events:
+        first_start = min(float(event["start_ts"]) for event in timed_events)
+        last_end = max(float(event["end_ts"]) for event in timed_events)
+        return max(0.0, (last_end - first_start) * 1000.0)
+
+    rank_totals: Dict[int, float] = {}
+    for event in events:
+        rank = _event_rank(event)
+        rank_totals[rank] = rank_totals.get(rank, 0.0) + float(event.get("elapsed_ms", 0.0))
+    return max(rank_totals.values()) if rank_totals else 1.0
+
+
+def _bcp_stats(
+    events: List[dict],
+    *,
+    group_size: int,
+    policy: str,
+    vpp_size: int,
+    baseline_vpp_size: int,
+    layout: str | None,
+    runtime: str,
+    budget: BcpBudget,
+) -> BcpStats:
+    critical_path = _critical_path_ms(events)
+    exposed_wait = sum(
+        float(event.get("wait_ms", event.get("elapsed_ms", 0.0)))
+        for event in events
+        if str(event.get("name", "")).startswith("p2p_") and "wait" in str(event.get("name", ""))
+    )
+    activation_peak = _estimate_memory(events)
+    fb_delay = _estimate_fb_delay_steps(events)
+    credit_pressure = _p2p_credit_pressure(events)
+    pressure = _chunk_pressure(events, vpp_size)
+    if pressure:
+        avg_pressure = sum(pressure.values()) / len(pressure)
+        chunk_skew = max(pressure.values()) / max(avg_pressure, 1e-6)
+    else:
+        chunk_skew = 1.0
+
+    # Candidate effects are deliberately conservative: they bias search toward
+    # candidates that shorten exposed critical-path pressure without claiming
+    # actual speedup before a short-run validation confirms it.
+    policy_gain = 0.04 if policy == "front-loaded" else 0.0
+    layout_gain = 0.05 if layout else 0.0
+    runtime_gain = 0.03 if runtime == "ready-set" else 0.0
+    if vpp_size > baseline_vpp_size:
+        vpp_gain = min(0.08, 0.02 * (vpp_size - baseline_vpp_size))
+    elif vpp_size < baseline_vpp_size:
+        vpp_gain = -min(0.06, 0.02 * (baseline_vpp_size - vpp_size))
+    else:
+        vpp_gain = 0.0
+    group_penalty = 0.03 * max(0, 2 - group_size)
+
+    predicted_critical_path = critical_path * (
+        1.0 - policy_gain - layout_gain - runtime_gain - vpp_gain + group_penalty
+    )
+    activation_violation = 0.0
+    if budget.activation_peak_mb is not None:
+        activation_violation = max(0.0, activation_peak - budget.activation_peak_mb)
+    fb_violation = 0.0
+    if budget.fb_delay_steps is not None:
+        fb_violation = max(0.0, float(fb_delay - budget.fb_delay_steps))
+    credit_violation = 0.0
+    if budget.p2p_credit is not None:
+        credit_violation = max(0.0, float(credit_pressure - budget.p2p_credit))
+
+    score = (
+        predicted_critical_path
+        + 0.35 * exposed_wait
+        + 6.0 * max(0.0, chunk_skew - 1.0)
+        + 0.02 * activation_violation
+        + 4.0 * fb_violation
+        + 3.0 * credit_violation
+    )
+    return BcpStats(
+        critical_path_ms=predicted_critical_path,
+        exposed_p2p_wait_ms=exposed_wait,
+        activation_peak_mb=activation_peak,
+        fb_delay_steps=fb_delay,
+        chunk_skew=chunk_skew,
+        p2p_credit_pressure=credit_pressure,
+        score=score,
+    )
 
 
 def _build_uniform_layout(num_layers: int, pipeline_parallel_size: int, vpp_size: int) -> str:
@@ -357,6 +554,7 @@ def _build_candidate(
     args,
     rewrites: List[dict],
     events: List[dict],
+    budget: BcpBudget,
 ) -> Any:
     legal_actions = {
         "change_schedule_order",
@@ -384,6 +582,16 @@ def _build_candidate(
         args.num_model_chunks,
         layout,
     )
+    bcp = _bcp_stats(
+        events,
+        group_size=group_size,
+        policy=candidate.name,
+        vpp_size=vpp_size,
+        baseline_vpp_size=args.num_model_chunks,
+        layout=layout,
+        runtime=args.runtime,
+        budget=budget,
+    )
     tasks = _build_task_dag(synth, events, args, vpp_size)
     estimated_peak_memory_mb = _estimate_memory(events)
     runtime_policy = {"runtime": args.runtime, "allow_out_of_order_p2p": False}
@@ -404,9 +612,17 @@ def _build_candidate(
         ),
         metadata={
             "estimated_step_time_ms": step_time,
+            "bcp_score": bcp.score,
+            "bcp_critical_path_ms": bcp.critical_path_ms,
+            "bcp_exposed_p2p_wait_ms": bcp.exposed_p2p_wait_ms,
+            "bcp_activation_peak_mb": bcp.activation_peak_mb,
+            "bcp_fb_delay_steps": bcp.fb_delay_steps,
+            "bcp_chunk_skew": bcp.chunk_skew,
+            "bcp_p2p_credit_pressure": bcp.p2p_credit_pressure,
             "estimated_throughput_score": 1.0 / max(step_time, 1e-6),
             "estimated_peak_memory_mb": estimated_peak_memory_mb,
             "source": "search_pipeline_strategy.py",
+            "objective": args.objective,
             "layout_kind": "custom" if layout else "default",
             "baseline_num_virtual_stages_per_pipeline_rank": args.num_model_chunks,
         },
@@ -451,7 +667,36 @@ def main() -> None:
     parser.add_argument("--runtime", choices=["fixed", "ready-set"], default="fixed")
     parser.add_argument("--memory-budget-mb", type=float, default=None)
     parser.add_argument("--candidate-budget", type=int, default=16)
+    parser.add_argument(
+        "--objective",
+        choices=["legacy", "bcp"],
+        default="bcp",
+        help="Rank candidates by legacy step-time estimate or bounded critical-path score.",
+    )
+    parser.add_argument(
+        "--bcp-activation-budget-mb",
+        type=float,
+        default=None,
+        help="Soft activation peak budget for BCP ranking.",
+    )
+    parser.add_argument(
+        "--bcp-p2p-credit-budget",
+        type=int,
+        default=None,
+        help="Soft maximum outstanding P2P request budget for BCP ranking.",
+    )
+    parser.add_argument(
+        "--bcp-fb-delay-budget",
+        type=int,
+        default=None,
+        help="Soft forward/backward event-distance budget for BCP ranking.",
+    )
     args = parser.parse_args()
+    bcp_budget = BcpBudget(
+        activation_peak_mb=args.bcp_activation_budget_mb,
+        p2p_credit=args.bcp_p2p_credit_budget,
+        fb_delay_steps=args.bcp_fb_delay_budget,
+    )
 
     synth = _load_module(
         "strategy_synthesizer",
@@ -539,6 +784,7 @@ def main() -> None:
                 args,
                 proposal_payload,
                 events,
+                bcp_budget,
             )
             accepted.append(plan)
         except Exception as exc:  # noqa: BLE001 - report verifier/search failures.
@@ -555,12 +801,17 @@ def main() -> None:
 
     if not accepted:
         raise RuntimeError(f"no valid strategy candidates; rejected={rejected}")
-    best = min(accepted, key=lambda plan: plan.metadata["estimated_step_time_ms"])
+    if args.objective == "legacy":
+        best = min(accepted, key=lambda plan: plan.metadata["estimated_step_time_ms"])
+    else:
+        best = min(accepted, key=lambda plan: plan.metadata["bcp_score"])
     synth.emit_strategy_plan(best, args.output)
 
     report = {
         "bottlenecks": [asdict(item) for item in bottlenecks],
         "proposals": proposal_payload,
+        "objective": args.objective,
+        "bcp_budget": asdict(bcp_budget),
         "accepted": [synth.strategy_plan_to_dict(item) for item in accepted],
         "rejected": rejected,
         "best": synth.strategy_plan_to_dict(best),
