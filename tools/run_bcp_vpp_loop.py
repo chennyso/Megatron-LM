@@ -57,7 +57,7 @@ def main() -> None:
     parser.add_argument("--num-layers", type=int, default=None)
     parser.add_argument("--candidate-budget", type=int, default=16)
     parser.add_argument("--objective", choices=["legacy", "bcp"], default="bcp")
-    parser.add_argument("--runtime", choices=["fixed", "ready-set"], default="fixed")
+    parser.add_argument("--runtime", choices=["fixed", "ready-set", "bcp-ready"], default="fixed")
     parser.add_argument("--memory-budget-mb", type=float, default=None)
     parser.add_argument("--bcp-activation-budget-mb", type=float, default=None)
     parser.add_argument("--bcp-p2p-credit-budget", type=int, default=None)

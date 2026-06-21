@@ -2849,8 +2849,15 @@ def _add_distributed_args(parser):
                        help='Optional JSON StrategyPlan. Invalid plans fail fast.')
     add_strategy_arg('--pipeline-strategy-runtime',
                        type=str, default='fixed',
-                       choices=['fixed', 'ready-set'],
-                       help='Pipeline strategy runtime. ready-set is conservative without tagged P2P.')
+                       choices=['fixed', 'ready-set', 'bcp-ready'],
+                       help=('Pipeline strategy runtime. ready-set is conservative without tagged P2P; '
+                       'bcp-ready can run local-safe bubble-fill work before blocking P2P waits.'))
+    add_strategy_arg('--pipeline-strategy-p2p-credit-budget',
+                       type=int, default=None,
+                       help='Optional outstanding P2P request budget for bcp-ready runtime.')
+    add_strategy_arg('--pipeline-strategy-min-fill-wait-ms',
+                       type=float, default=0.0,
+                       help='Minimum expected P2P wait window before bcp-ready runs bubble-fill work.')
     add_strategy_arg('--pipeline-strategy-search-budget',
                        type=int, default=16,
                        help='Offline candidate budget for pipeline strategy search tools.')

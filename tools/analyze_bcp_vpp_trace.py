@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument("--baseline-num-model-chunks", type=int, default=None)
     parser.add_argument("--microbatch-group-size", type=int, required=True)
     parser.add_argument("--policy", default="default")
-    parser.add_argument("--runtime", choices=["fixed", "ready-set"], default="fixed")
+    parser.add_argument("--runtime", choices=["fixed", "ready-set", "bcp-ready"], default="fixed")
     parser.add_argument("--layout-kind", choices=["default", "custom"], default="default")
     parser.add_argument("--bcp-activation-budget-mb", type=float, default=None)
     parser.add_argument("--bcp-p2p-credit-budget", type=int, default=None)

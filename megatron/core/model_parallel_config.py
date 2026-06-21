@@ -388,7 +388,13 @@ class ModelParallelConfig:
     """Optional JSON StrategyPlan path. If set, the plan is verified before use."""
 
     pipeline_strategy_runtime: str = "fixed"
-    """Pipeline strategy runtime: fixed or conservative ready-set."""
+    """Pipeline strategy runtime: fixed, conservative ready-set, or BCP-ready bubble fill."""
+
+    pipeline_strategy_p2p_credit_budget: Optional[int] = None
+    """Optional outstanding P2P request budget for BCP-ready bubble filling."""
+
+    pipeline_strategy_min_fill_wait_ms: float = 0.0
+    """Minimum expected wait window before BCP-ready runs local bubble-fill work."""
 
     pipeline_strategy_search_budget: int = 16
     """Offline candidate budget for pipeline strategy search tools."""

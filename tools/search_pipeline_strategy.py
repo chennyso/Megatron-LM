@@ -249,7 +249,7 @@ def _bcp_stats(
     # actual speedup before a short-run validation confirms it.
     policy_gain = 0.04 if policy == "front-loaded" else 0.0
     layout_gain = 0.05 if layout else 0.0
-    runtime_gain = 0.03 if runtime == "ready-set" else 0.0
+    runtime_gain = 0.04 if runtime == "bcp-ready" else 0.03 if runtime == "ready-set" else 0.0
     if vpp_size > baseline_vpp_size:
         vpp_gain = min(0.08, 0.02 * (vpp_size - baseline_vpp_size))
     elif vpp_size < baseline_vpp_size:
@@ -855,7 +855,11 @@ def _build_candidate(
     tasks = _build_task_dag(synth, events, args, vpp_size)
     task_dag_critical_path = _task_dag_critical_path_ms(tasks)
     estimated_peak_memory_mb = _estimate_memory(events)
-    runtime_policy = {"runtime": args.runtime, "allow_out_of_order_p2p": False}
+    runtime_policy = {
+        "runtime": args.runtime,
+        "allow_out_of_order_p2p": False,
+        "bubble_fill": args.runtime == "bcp-ready",
+    }
     plan = synth.strategy_candidate_to_plan(
         candidate,
         microbatch_group_size=group_size,
@@ -926,7 +930,7 @@ def main() -> None:
     parser.add_argument("--microbatch-group-size", type=int, required=True)
     parser.add_argument("--pipeline-parallel-size", type=int, required=True)
     parser.add_argument("--num-layers", type=int, default=None)
-    parser.add_argument("--runtime", choices=["fixed", "ready-set"], default="fixed")
+    parser.add_argument("--runtime", choices=["fixed", "ready-set", "bcp-ready"], default="fixed")
     parser.add_argument("--memory-budget-mb", type=float, default=None)
     parser.add_argument("--candidate-budget", type=int, default=16)
     parser.add_argument(

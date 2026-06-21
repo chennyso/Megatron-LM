@@ -22,6 +22,7 @@ from megatron.core.pipeline_parallel.strategy_synthesizer import (
     build_strategy_schedule_table,
     load_strategy_plan,
 )
+from megatron.core.pipeline_parallel.strategy_runtime import BCPReadyRuntime, BubbleFillWork
 from megatron.core.pipeline_parallel.utils import (
     is_pp_first_stage,
     is_pp_last_stage,
@@ -1253,6 +1254,12 @@ def forward_backward_pipelining_with_interleaving(
         pp_rank=pipeline_parallel_rank,
         flush_path=strategy_trace_path,
     )
+    bcp_ready_runtime = BCPReadyRuntime(
+        mode=pipeline_strategy_runtime,
+        p2p_credit_budget=getattr(config, "pipeline_strategy_p2p_credit_budget", None),
+        memory_budget_mb=pipeline_strategy_memory_budget_mb,
+        min_wait_to_fill_ms=getattr(config, "pipeline_strategy_min_fill_wait_ms", 0.0),
+    )
 
     def strategy_trace_hook(name, elapsed_ms, **metadata):
         strategy_trace.record(
@@ -1272,18 +1279,55 @@ def forward_backward_pipelining_with_interleaving(
     def wait_with_trace(handle, event_name, **metadata):
         if handle is None:
             return
+        fill_func = getattr(config, "pipeline_strategy_bubble_fill_func", None)
+        if fill_func is not None and not bcp_ready_runtime.work:
+            bcp_ready_runtime.register_work(
+                BubbleFillWork(
+                    name=f"bubble_fill:{event_name}",
+                    run=fill_func,
+                    priority=1.0,
+                )
+            )
+        fill_result = bcp_ready_runtime.run_one_fill(
+            CudaTimer,
+            expected_wait_ms=metadata.get("expected_wait_ms"),
+        )
+        if strategy_trace.enabled:
+            strategy_trace.record(
+                "bcp_bubble_fill",
+                fill_result.elapsed_ms,
+                memory_mb=current_memory_mb(),
+                fill_name=fill_result.name,
+                fill_ran=fill_result.ran,
+                fill_reason=fill_result.reason,
+                trigger_event=event_name,
+                outstanding_p2p=bcp_ready_runtime.outstanding_p2p,
+                **metadata,
+            )
         if not strategy_trace.enabled:
             handle.wait()
+            bcp_ready_runtime.mark_p2p_completed()
             return
         with CudaTimer() as wait_timer:
             handle.wait()
+        bcp_ready_runtime.mark_p2p_completed()
         strategy_trace.record(
             event_name,
             wait_timer.elapsed_ms,
             wait_ms=wait_timer.elapsed_ms,
             memory_mb=current_memory_mb(),
+            bcp_fill_ran=fill_result.ran,
+            bcp_fill_elapsed_ms=fill_result.elapsed_ms,
+            bcp_fill_name=fill_result.name,
+            bcp_fill_reason=fill_result.reason,
+            outstanding_p2p=bcp_ready_runtime.outstanding_p2p,
             **metadata,
         )
+
+    def mark_wait_handles_issued(wait_handles):
+        if not wait_handles:
+            return
+        bcp_ready_runtime.mark_p2p_issued(len(wait_handles))
 
     schedule_table = get_schedule_table(
         num_microbatches,
@@ -1714,6 +1758,7 @@ def forward_backward_pipelining_with_interleaving(
                 )
             )
 
+            mark_wait_handles_issued(fwd_wait_recv_handles)
             if fwd_wait_recv_handles:
                 recv_prev_wait_handles.append(fwd_wait_recv_handles.pop("recv_prev"))
 
@@ -1780,6 +1825,7 @@ def forward_backward_pipelining_with_interleaving(
                         overlap_p2p_comm=True,
                     )
                 )
+            mark_wait_handles_issued(fwd_wait_handles)
             if send_next_wait_handle is not None:
                 wait_with_trace(
                     send_next_wait_handle,
@@ -1832,6 +1878,7 @@ def forward_backward_pipelining_with_interleaving(
                         overlap_p2p_comm=True,
                     )
                 )
+                mark_wait_handles_issued(bwd_wait_handles)
                 if send_prev_wait_handle is not None:
                     wait_with_trace(
                         send_prev_wait_handle,
@@ -1934,6 +1981,7 @@ def forward_backward_pipelining_with_interleaving(
                         overlap_p2p_comm=True,
                     )
                 )
+                mark_wait_handles_issued(fwd_wait_handles)
                 if send_next_wait_handle is not None:
                     wait_with_trace(
                         send_next_wait_handle,
@@ -2026,6 +2074,7 @@ def forward_backward_pipelining_with_interleaving(
                         overlap_p2p_comm=True,
                     )
                 )
+                mark_wait_handles_issued(bwd_wait_handles)
                 if send_prev_wait_handle is not None:
                     wait_with_trace(
                         send_prev_wait_handle,
@@ -2188,6 +2237,7 @@ def forward_backward_pipelining_with_interleaving(
                     )
                 )
 
+                mark_wait_handles_issued(bwd_wait_recv_handles)
                 if bwd_wait_recv_handles:
                     recv_next_wait_handles.append(bwd_wait_recv_handles.pop("recv_next"))
 
@@ -2215,6 +2265,7 @@ def forward_backward_pipelining_with_interleaving(
                         )
                     )
 
+                mark_wait_handles_issued(bwd_wait_handles)
                 if send_prev_wait_handle is not None:
                     wait_with_trace(
                         send_prev_wait_handle,

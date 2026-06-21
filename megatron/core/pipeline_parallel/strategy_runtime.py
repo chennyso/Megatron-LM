@@ -10,7 +10,7 @@ the strategy plan. Full out-of-order P2P requires tagged send/recv support.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Optional, Set
+from typing import Callable, Dict, Iterable, Optional, Set
 
 
 @dataclass(frozen=True)
@@ -86,3 +86,108 @@ class ReadySetRuntime:
         if not legal:
             return hint_task_id
         return max(legal, key=lambda task: task.priority).task_id
+
+
+@dataclass
+class BubbleFillWork:
+    """Small unit of local work that can be run before a blocking P2P wait.
+
+    The callable must preserve pipeline message order. This is intended for
+    local-safe work such as delayed WGrad chunks, not for arbitrary forward or
+    backward reordering.
+    """
+
+    name: str
+    run: Callable[[], None]
+    priority: float = 0.0
+    estimated_ms: float = 0.0
+    memory_mb: float = 0.0
+
+
+@dataclass
+class BubbleFillResult:
+    """Outcome of one pre-wait bubble filling attempt."""
+
+    name: str
+    ran: bool
+    elapsed_ms: float = 0.0
+    reason: str = ""
+
+
+@dataclass
+class BCPReadyRuntime:
+    """Critical-path aware local runtime for conservative PP/VPP execution.
+
+    This runtime does not change Megatron's P2P matching order. It only decides
+    whether local-safe work should run immediately before a blocking P2P wait.
+    That gives the search/runtime stack a real hot-path hook while preserving
+    the fixed interleaved schedule as the fallback.
+    """
+
+    mode: str = "fixed"
+    p2p_credit_budget: Optional[int] = None
+    memory_budget_mb: Optional[float] = None
+    min_wait_to_fill_ms: float = 0.0
+    work: list[BubbleFillWork] = field(default_factory=list)
+    outstanding_p2p: int = 0
+    fill_attempts: int = 0
+    fill_runs: int = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode in {"bcp-ready", "ready-set"}
+
+    def register_work(self, work: BubbleFillWork) -> None:
+        self.work.append(work)
+        self.work.sort(key=lambda item: item.priority, reverse=True)
+
+    def mark_p2p_issued(self, count: int = 1) -> None:
+        self.outstanding_p2p += max(0, count)
+
+    def mark_p2p_completed(self, count: int = 1) -> None:
+        self.outstanding_p2p = max(0, self.outstanding_p2p - max(0, count))
+
+    def _can_run(self, work: BubbleFillWork, expected_wait_ms: Optional[float]) -> tuple[bool, str]:
+        if not self.enabled:
+            return False, "runtime_disabled"
+        if expected_wait_ms is not None and expected_wait_ms < self.min_wait_to_fill_ms:
+            return False, "wait_window_too_small"
+        if self.p2p_credit_budget is not None and self.outstanding_p2p > self.p2p_credit_budget:
+            return False, "p2p_credit_budget_exceeded"
+        if self.memory_budget_mb is not None and work.memory_mb > self.memory_budget_mb:
+            return False, "memory_budget_exceeded"
+        return True, ""
+
+    def pop_fill_work(self, expected_wait_ms: Optional[float] = None) -> BubbleFillWork | None:
+        remaining: list[BubbleFillWork] = []
+        selected: BubbleFillWork | None = None
+        for item in self.work:
+            can_run, _reason = self._can_run(item, expected_wait_ms)
+            if selected is None and can_run:
+                selected = item
+            else:
+                remaining.append(item)
+        self.work = remaining
+        return selected
+
+    def run_one_fill(
+        self,
+        timer_factory: Callable[[], object],
+        expected_wait_ms: Optional[float] = None,
+    ) -> BubbleFillResult:
+        self.fill_attempts += 1
+        if not self.work:
+            return BubbleFillResult(name="", ran=False, reason="no_work")
+        item = self.pop_fill_work(expected_wait_ms)
+        if item is None:
+            _can_run, reason = self._can_run(self.work[0], expected_wait_ms)
+            return BubbleFillResult(name=self.work[0].name, ran=False, reason=reason)
+
+        with timer_factory() as timer:
+            item.run()
+        self.fill_runs += 1
+        return BubbleFillResult(
+            name=item.name,
+            ran=True,
+            elapsed_ms=float(getattr(timer, "elapsed_ms", 0.0)),
+        )

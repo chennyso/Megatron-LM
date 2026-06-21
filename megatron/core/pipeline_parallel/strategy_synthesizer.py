@@ -416,12 +416,12 @@ class StrategyVerifier:
     def _verify_runtime_policy(self, plan: StrategyPlan) -> None:
         runtime = plan.runtime_policy or {}
         runtime_name = runtime.get("runtime", runtime.get("mode", "fixed"))
-        if runtime_name not in {"fixed", "ready-set"}:
+        if runtime_name not in {"fixed", "ready-set", "bcp-ready"}:
             raise ValueError(f"unsupported strategy runtime {runtime_name}")
-        if runtime_name == "ready-set" and runtime.get("allow_out_of_order_p2p", False):
+        if runtime_name in {"ready-set", "bcp-ready"} and runtime.get("allow_out_of_order_p2p", False):
             raise ValueError(
                 "out-of-order P2P requires tagged P2P runtime; current backend only supports "
-                "conservative ready-set dispatch"
+                "conservative ready-set or bcp-ready dispatch"
             )
 
     def _verify_parallel_shape(self, plan: StrategyPlan) -> None:

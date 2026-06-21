@@ -38,6 +38,27 @@ def _load_effective_overlap():
     return module
 
 
+def _load_strategy_runtime():
+    repo_root = Path(__file__).resolve().parents[3]
+    module_path = repo_root / "megatron" / "core" / "pipeline_parallel" / "strategy_runtime.py"
+    spec = importlib.util.spec_from_file_location("strategy_runtime", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class _ManualTimer:
+    elapsed_ms = 2.5
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+
 def test_load_events_ignores_trailing_invalid_json_after_event_array():
     module = _load_pipeline_strategy_agent()
     content = """[
@@ -239,3 +260,78 @@ def test_effective_overlap_classifies_useful_harmful_and_fake():
     assert report.fake_overlap_ms == 5.0
     assert report.useful_overlap_ms == 0.0
     assert report.harmful_overlap_ratio == 1.0
+
+
+def test_bcp_ready_runtime_runs_local_bubble_fill_work():
+    module = _load_strategy_runtime()
+    calls = []
+    runtime = module.BCPReadyRuntime(mode="bcp-ready")
+    runtime.register_work(
+        module.BubbleFillWork(
+            name="delayed_wgrad",
+            run=lambda: calls.append("ran"),
+            priority=10.0,
+        )
+    )
+
+    result = runtime.run_one_fill(_ManualTimer)
+
+    assert calls == ["ran"]
+    assert result.ran
+    assert result.name == "delayed_wgrad"
+    assert result.elapsed_ms == 2.5
+    assert runtime.fill_runs == 1
+
+
+def test_bcp_ready_runtime_respects_p2p_credit_budget():
+    module = _load_strategy_runtime()
+    calls = []
+    runtime = module.BCPReadyRuntime(mode="bcp-ready", p2p_credit_budget=0)
+    runtime.mark_p2p_issued()
+    runtime.register_work(
+        module.BubbleFillWork(
+            name="delayed_wgrad",
+            run=lambda: calls.append("ran"),
+            priority=10.0,
+        )
+    )
+
+    result = runtime.run_one_fill(_ManualTimer)
+
+    assert calls == []
+    assert not result.ran
+    assert result.reason == "p2p_credit_budget_exceeded"
+
+
+def test_strategy_verifier_accepts_bcp_ready_without_out_of_order_p2p():
+    module = _load_search_pipeline_strategy()
+    synth = module._load_module(
+        "strategy_synthesizer_for_bcp_ready_test",
+        "megatron/core/pipeline_parallel/strategy_synthesizer.py",
+    )
+    constraints = synth.StrategyConstraints(
+        num_microbatches=2,
+        num_model_chunks=2,
+        microbatch_group_size=2,
+        pipeline_parallel_size=2,
+    )
+    candidate = synth.build_strategy_schedule_table("default", constraints)
+    plan = synth.strategy_candidate_to_plan(
+        candidate,
+        microbatch_group_size=2,
+        runtime_policy={"runtime": "bcp-ready", "allow_out_of_order_p2p": False},
+    )
+
+    synth.StrategyVerifier(constraints).verify(plan)
+
+    invalid = synth.strategy_candidate_to_plan(
+        candidate,
+        microbatch_group_size=2,
+        runtime_policy={"runtime": "bcp-ready", "allow_out_of_order_p2p": True},
+    )
+    try:
+        synth.StrategyVerifier(constraints).verify(invalid)
+    except ValueError as exc:
+        assert "out-of-order P2P" in str(exc)
+    else:
+        raise AssertionError("out-of-order bcp-ready plan should be rejected")
