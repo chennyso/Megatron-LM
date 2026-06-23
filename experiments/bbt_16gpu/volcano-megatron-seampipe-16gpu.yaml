@@ -136,6 +136,7 @@ spec:
             git fetch origin
             git checkout "$GIT_BRANCH"
             git reset --hard "origin/$GIT_BRANCH"
+            python3 -c 'from megatron.core.datasets.utils import compile_helpers; compile_helpers()'
 
             PEERS=""
             waited=0
