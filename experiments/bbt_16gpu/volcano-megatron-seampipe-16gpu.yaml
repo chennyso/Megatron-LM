@@ -58,7 +58,7 @@ spec:
           workingDir: /workspace/repos/Megatron-LM
           env:
           - name: GIT_REPO
-            value: git@github-443:chennyso/Megatron-LM.git
+            value: https://github.com/chennyso/Megatron-LM.git
           - name: GIT_BRANCH
             value: codex/agentpipe-vp-search
           - name: SERVICE_NAME
@@ -117,7 +117,6 @@ spec:
           - |
             set -euo pipefail
             mkdir -p /workspace/repos /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
-            export GIT_SSH_COMMAND="ssh -F /root/.ssh/config"
             if [ ! -d /workspace/repos/Megatron-LM/.git ]; then
               git clone "$GIT_REPO" /workspace/repos/Megatron-LM
             fi
@@ -206,9 +205,6 @@ spec:
             mountPath: /workspace
           - name: model-cache
             mountPath: /models
-          - name: ssh-config
-            mountPath: /root/.ssh
-            readOnly: true
         volumes:
         - name: workspace
           persistentVolumeClaim:
@@ -216,7 +212,3 @@ spec:
         - name: model-cache
           persistentVolumeClaim:
             claimName: chenny-models-nfs
-        - name: ssh-config
-          secret:
-            secretName: github-ssh-key
-            defaultMode: 0400
