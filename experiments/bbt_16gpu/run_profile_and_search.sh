@@ -91,7 +91,10 @@ COMMON_ARGS="\
   --disable-bias-linear \
   --untie-embeddings-and-output-weights \
   --mock-data \
-  --train-iters 20"
+  --train-iters 20 \
+  --lr 1e-6 \
+  --min-lr 1e-7 \
+  --lr-decay-style constant"
 
 if [[ "$MODE" == "profile" ]]; then
   cat <<EOF

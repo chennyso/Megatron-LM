@@ -107,6 +107,9 @@ spec:
               --untie-embeddings-and-output-weights
               --mock-data
               --train-iters 20
+              --lr 1e-6
+              --min-lr 1e-7
+              --lr-decay-style constant
               --num-layers-per-virtual-pipeline-stage 3
               --pipeline-strategy-policy default
               --pipeline-strategy-runtime fixed
