@@ -117,6 +117,8 @@ spec:
           - |
             set -euo pipefail
             mkdir -p /workspace/repos /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
+            exec > >(tee -a "/workspace/runs/seampipe/qwen3-8b/final/launcher.$(hostname).log") 2>&1
+            export GIT_SSL_NO_VERIFY=1
             if [ ! -d /workspace/repos/Megatron-LM/.git ]; then
               git clone "$GIT_REPO" /workspace/repos/Megatron-LM
             fi
