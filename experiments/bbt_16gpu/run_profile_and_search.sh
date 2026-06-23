@@ -92,6 +92,8 @@ COMMON_ARGS="\
   --untie-embeddings-and-output-weights \
   --mock-data \
   --train-iters 20 \
+  --eval-iters 1 \
+  --eval-interval 1000 \
   --lr 1e-6 \
   --min-lr 1e-7 \
   --lr-decay-style constant"
