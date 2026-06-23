@@ -573,13 +573,11 @@ class StrategyVerifier:
         and derives release counts from the default grouped schedule. Dependency-safe
         schedule tables can still break those queue invariants. Until a tagged P2P /
         table-driven executor owns tensor lifetimes directly, executable plans must
-        preserve the default table shape.
+        preserve the default table shape, even when the runtime dispatcher is
+        "ready-set" or "bcp-ready".
         """
 
         runtime = plan.runtime_policy or {}
-        runtime_name = runtime.get("runtime", runtime.get("mode", "fixed"))
-        if runtime_name != "fixed":
-            return
         expected = tuple(
             _default_schedule_table(
                 self.constraints.num_microbatches,
@@ -587,11 +585,25 @@ class StrategyVerifier:
                 self.constraints.microbatch_group_size,
             )
         )
-        if tuple(plan.schedule_table) != expected:
-            raise ValueError(
-                f"strategy {plan.name} changes the schedule table, but fixed Megatron VPP "
-                "currently requires the default table to preserve tensor queue lifetimes"
-            )
+        if tuple(plan.schedule_table) == expected:
+            return
+
+        executor_controls_queues = bool(
+            runtime.get("tagged_p2p_executor", False)
+            or runtime.get("table_driven_executor", False)
+            or plan.metadata.get("tagged_p2p_executor", False)
+            or plan.metadata.get("table_driven_executor", False)
+        )
+        if executor_controls_queues:
+            return
+
+        runtime_name = runtime.get("runtime", runtime.get("mode", "fixed"))
+        raise ValueError(
+            f"strategy {plan.name} changes the schedule table, but Megatron's current "
+            f"interleaved executor still derives tensor queue lifetimes from the default "
+            f"table. runtime={runtime_name!r} needs tagged-P2P/table-driven executor support "
+            "before custom schedule tables are executable."
+        )
 
     def _verify_memory(self, plan: StrategyPlan) -> None:
         if self.memory_budget_mb is None:

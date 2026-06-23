@@ -1,0 +1,248 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: seampipe-megatron-final-svc
+  namespace: default
+  labels:
+    app: seampipe-megatron-final
+spec:
+  clusterIP: None
+  selector:
+    app: seampipe-megatron-final
+  ports:
+  - name: torch
+    port: 29500
+    targetPort: 29500
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: seampipe-megatron-16gpu-final
+  namespace: default
+spec:
+  minAvailable: 2
+  schedulerName: volcano
+  queue: default
+  tasks:
+  - name: worker
+    replicas: 2
+    policies:
+    - event: TaskCompleted
+      action: CompleteJob
+    template:
+      metadata:
+        labels:
+          app: seampipe-megatron-final
+        annotations:
+          k8s.v1.cni.cncf.io/networks: sriov-ib-network
+      spec:
+        restartPolicy: Never
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+              - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values: ["g5", "g6"]
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: seampipe-megatron-final
+              topologyKey: kubernetes.io/hostname
+        containers:
+        - name: worker
+          image: nvcr.io/nvidia/pytorch:26.04-py3
+          imagePullPolicy: IfNotPresent
+          workingDir: /workspace
+          env:
+          - name: GIT_REPO
+            value: https://github.com/chennyso/Megatron-LM.git
+          - name: GIT_BRANCH
+            value: codex/agentpipe-vp-search
+          - name: SERVICE_NAME
+            value: seampipe-megatron-final-svc
+          - name: WORLD_SIZE
+            value: "2"
+          - name: NPROC_PER_NODE
+            value: "8"
+          - name: MASTER_PORT
+            value: "29500"
+          - name: HF_MODEL_CKPT
+            value: /workspace/models/qwen3-8B
+          - name: RUN_DIR
+            value: /workspace/runs/seampipe/qwen3-8b/final-plan
+          - name: TRACE_DIR
+            value: /workspace/runs/seampipe/qwen3-8b/final-plan/traces
+          - name: PLAN_PATH
+            value: /workspace/runs/seampipe/qwen3-8b/plans/best-plan.json
+          - name: MODE
+            value: final
+          - name: MEGATRON_ARGS
+            value: >-
+              --tensor-model-parallel-size 4
+              --pipeline-model-parallel-size 4
+              --num-layers 36
+              --hidden-size 4096
+              --ffn-hidden-size 12288
+              --num-attention-heads 32
+              --group-query-attention
+              --num-query-groups 8
+              --seq-length 4096
+              --max-position-embeddings 40960
+              --micro-batch-size 1
+              --global-batch-size 16
+              --bf16
+              --use-mcore-models
+              --position-embedding-type rope
+              --rotary-percent 1.0
+              --rotary-base 1000000
+              --tokenizer-type HuggingFaceTokenizer
+              --tokenizer-model /workspace/models/qwen3-8B
+              --no-masked-softmax-fusion
+              --normalization RMSNorm
+              --swiglu
+              --disable-bias-linear
+              --untie-embeddings-and-output-weights
+              --mock-data
+              --train-iters 20
+              --eval-iters 1
+              --eval-interval 1000
+              --lr 1e-6
+              --min-lr 1e-7
+              --lr-decay-style constant
+              --num-layers-per-virtual-pipeline-stage 3
+              --pipeline-strategy-policy default
+              --pipeline-strategy-runtime fixed
+              --pipeline-strategy-profile-steps 8
+              --pipeline-strategy-trace-path /workspace/runs/seampipe/qwen3-8b/final-plan/traces/rank{pp_rank}.json
+          command: ["/bin/bash", "-lc"]
+          args:
+          - |
+            set -euo pipefail
+            mkdir -p /workspace/repos /workspace/runs/seampipe/qwen3-8b/final-plan/traces /workspace/runs/seampipe/qwen3-8b/plans
+            exec > >(tee -a "/workspace/runs/seampipe/qwen3-8b/final-plan/launcher.$(hostname).log") 2>&1
+            export GIT_SSL_NO_VERIFY=1
+            if ! python3 -c 'import transformers, sentencepiece' >/dev/null 2>&1; then
+              python3 -m pip install -q transformers sentencepiece
+            fi
+            REPO_DIR="/workspace/repos/Megatron-LM-$(hostname)"
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              rm -rf "$REPO_DIR"
+              git clone "$GIT_REPO" "$REPO_DIR"
+            fi
+            cd "$REPO_DIR"
+            git fetch origin
+            git checkout "$GIT_BRANCH"
+            git reset --hard "origin/$GIT_BRANCH"
+            python3 -c 'from megatron.core.datasets.utils import compile_helpers; compile_helpers()'
+
+            PEERS=""
+            waited=0
+            while [ $waited -lt 300 ]; do
+              PEERS=$(getent hosts "$SERVICE_NAME" 2>/dev/null | awk '{print $1}' | sort -u) || true
+              c=0
+              [ -n "$PEERS" ] && c=$(echo "$PEERS" | wc -l | tr -d ' ')
+              if [ "$c" -ge "$WORLD_SIZE" ]; then
+                break
+              fi
+              sleep 5
+              waited=$((waited+5))
+            done
+            c=0
+            [ -n "$PEERS" ] && c=$(echo "$PEERS" | wc -l | tr -d ' ')
+            [ "$c" -lt "$WORLD_SIZE" ] && { echo "peer discovery failed"; exit 1; }
+
+            MY_IP=$(hostname -I | awk '{print $1}')
+            MASTER_ADDR=$(echo "$PEERS" | head -1)
+            RANK=0
+            for ip in $PEERS; do
+              [ "$ip" = "$MY_IP" ] && break
+              RANK=$((RANK+1))
+            done
+
+            IB_IF=""
+            for i in net1 net2 net3; do
+              [ -d "/sys/class/net/$i" ] && { IB_IF="$i"; break; }
+            done
+            RDMA_DEV=""
+            [ -n "$IB_IF" ] && RDMA_DEV=$(ls /sys/class/net/"$IB_IF"/device/infiniband/ 2>/dev/null | head -1)
+
+            export NCCL_P2P_DISABLE=1
+            export NCCL_IB_DISABLE=0
+            export NCCL_NET_GDR_LEVEL=5
+            export NCCL_IB_HCA=${RDMA_DEV:-mlx5}
+            export NCCL_IB_GID_INDEX=0
+            export NCCL_IB_TC=136
+            export NCCL_SOCKET_IFNAME="${IB_IF:-net1}"
+            export NCCL_DEBUG=INFO
+            export NCCL_IB_QPS_PER_CONNECTION=4
+            export NCCL_IB_TIMEOUT=22
+            export NCCL_MIN_NCHANNELS=4
+            export UCX_NET_DEVICES="${IB_IF:-net1}"
+            export UCX_TLS=rc,cuda_copy,cuda_ipc
+            export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+            export CUDA_DEVICE_MAX_CONNECTIONS=1
+            export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            unset LD_PRELOAD NCCL_HOOK_ENABLE NCCL_HOOK_K8S_MODE NCCL_HOOK_COORDINATOR_ADDR NCCL_HOOK_POD_UID NCCL_HOOK_STATE_DIR NCCL_HOOK_LOG_DIR NCCL_HOOK_LOG_LEVEL G10_METRICS_PORT MIRAGE_DAEMON_SOCKET
+
+            echo "RANK=$RANK MASTER=$MASTER_ADDR MODE=$MODE"
+            if [ "$MODE" = "profile" ]; then
+              exec torchrun \
+                --nnodes="$WORLD_SIZE" \
+                --nproc_per_node="$NPROC_PER_NODE" \
+                --node_rank="$RANK" \
+                --master_addr="$MASTER_ADDR" \
+                --master_port="$MASTER_PORT" \
+                --rdzv_backend=static \
+                pretrain_gpt.py $MEGATRON_ARGS
+            fi
+
+            exec torchrun \
+              --nnodes="$WORLD_SIZE" \
+              --nproc_per_node="$NPROC_PER_NODE" \
+              --node_rank="$RANK" \
+              --master_addr="$MASTER_ADDR" \
+              --master_port="$MASTER_PORT" \
+              --rdzv_backend=static \
+              pretrain_gpt.py $MEGATRON_ARGS --pipeline-strategy-plan "$PLAN_PATH"
+          resources:
+            requests:
+              cpu: "48"
+              memory: "220Gi"
+              nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
+            limits:
+              cpu: "96"
+              memory: "320Gi"
+              nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
+          securityContext:
+            capabilities:
+              add:
+              - IPC_LOCK
+          volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: model-cache
+            mountPath: /models
+          - name: dev-infiniband
+            mountPath: /dev/infiniband
+          - name: dshm
+            mountPath: /dev/shm
+        volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: chenny-workspace
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: chenny-models-nfs
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband
+            type: DirectoryOrCreate
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Gi

@@ -340,7 +340,7 @@ def test_strategy_verifier_accepts_bcp_ready_without_out_of_order_p2p():
         raise AssertionError("out-of-order bcp-ready plan should be rejected")
 
 
-def test_seam_staggered_schedule_is_ready_set_legal_but_fixed_rejected():
+def test_seam_staggered_schedule_requires_table_driven_executor():
     module = _load_search_pipeline_strategy()
     synth = module._load_module(
         "strategy_synthesizer_for_seam_staggered_test",
@@ -364,7 +364,12 @@ def test_seam_staggered_schedule_is_ready_set_legal_but_fixed_rejected():
         microbatch_group_size=4,
         runtime_policy={"runtime": "ready-set", "allow_out_of_order_p2p": False},
     )
-    synth.StrategyVerifier(constraints).verify(ready_set_plan)
+    try:
+        synth.StrategyVerifier(constraints).verify(ready_set_plan)
+    except ValueError as exc:
+        assert "table-driven executor support" in str(exc)
+    else:
+        raise AssertionError("ready-set runtime should reject custom schedule tables")
 
     fixed_plan = synth.strategy_candidate_to_plan(
         candidate,
@@ -374,9 +379,16 @@ def test_seam_staggered_schedule_is_ready_set_legal_but_fixed_rejected():
     try:
         synth.StrategyVerifier(constraints).verify(fixed_plan)
     except ValueError as exc:
-        assert "requires the default table" in str(exc)
+        assert "table-driven executor support" in str(exc)
     else:
         raise AssertionError("fixed runtime should reject seam-staggered schedule table")
+
+    executor_ready_plan = synth.strategy_candidate_to_plan(
+        candidate,
+        microbatch_group_size=4,
+        runtime_policy={"runtime": "bcp-ready", "table_driven_executor": True},
+    )
+    synth.StrategyVerifier(constraints).verify(executor_ready_plan)
 
 
 def test_twincut_specs_expand_policy_and_group_neighborhoods():
