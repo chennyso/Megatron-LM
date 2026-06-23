@@ -2835,11 +2835,13 @@ def _add_distributed_args(parser):
 
     add_strategy_arg('--pipeline-strategy-policy',
                        type=str, default='default',
-                       choices=['default', 'front-loaded'],
+                       choices=['default', 'front-loaded', 'seam-staggered'],
                        help=('Pipeline strategy synthesis policy. '
                        '"default" preserves the current Megatron schedule. '
                        '"front-loaded" shrinks the first virtual-pipeline scheduling group as '
-                       'a first dependency-safe strategy-rewrite action.'))
+                       'a first dependency-safe strategy-rewrite action. '
+                       '"seam-staggered" shrinks warmup/cooldown groups and expands the '
+                       'steady-state wave for seam-heavy dual-node runs.'))
     add_strategy_arg('--pipeline-strategy-trace-path',
                        type=str, default=None,
                        help=('Optional JSON file to dump pipeline strategy trace events '

@@ -63,15 +63,31 @@ class CandidateSpec:
     rewrite: str
     rationale: str
     quick_score: float = 0.0
+    twincut_name: str = ""
+    segment_decoder_counts: Tuple[int, ...] = ()
+    segment_boundaries: Tuple[int, ...] = ()
+    cross_node_boundaries: Tuple[int, ...] = ()
+    node_assignment: Tuple[int, ...] = ()
+    vpp_packing: Tuple[Tuple[int, ...], ...] = ()
+    memory_actions: Tuple[Tuple[int, str], ...] = ()
+    topology_objective: float = 0.0
 
 
 BCP_REWRITE_ALGEBRA = {
     "baseline": "Preserve the default Megatron interleaved VPP schedule.",
     "front_loaded_group": "Shrink the first VPP group to reduce warmup critical-path exposure.",
+    "seam_staggered_group": (
+        "Shrink warmup/cooldown groups and thicken the steady-state wave to reduce "
+        "dual-node seam exposure without violating Megatron chunk ordering."
+    ),
     "change_group_size": "Change microbatch_group_size_per_vp_stage under Megatron legality checks.",
     "change_vp_degree": "Search a different virtual pipeline degree when layer divisibility permits.",
     "boundary_layout": "Move safe layer boundaries to reduce hot chunk or P2P boundary pressure.",
     "node_local_placement": "Prefer neighbor placement that keeps critical PP edges local when possible.",
+    "twincut_partition": (
+        "Synthesize topology-aware stage boundaries, seam-local VPP packing, and "
+        "memory actions before compiling the candidate into an executable layout."
+    ),
 }
 
 
@@ -227,6 +243,8 @@ def _bcp_stats(
     layout: str | None,
     runtime: str,
     budget: BcpBudget,
+    memory_actions: Tuple[Tuple[int, str], ...] = (),
+    cross_node_boundaries: Tuple[int, ...] = (),
 ) -> BcpStats:
     critical_path = _critical_path_ms(events)
     exposed_wait = sum(
@@ -247,7 +265,12 @@ def _bcp_stats(
     # Candidate effects are deliberately conservative: they bias search toward
     # candidates that shorten exposed critical-path pressure without claiming
     # actual speedup before a short-run validation confirms it.
-    policy_gain = 0.04 if policy == "front-loaded" else 0.0
+    if policy == "front-loaded":
+        policy_gain = 0.04
+    elif policy == "seam-staggered":
+        policy_gain = 0.06 if exposed_wait > 0.0 else 0.03
+    else:
+        policy_gain = 0.0
     layout_gain = 0.05 if layout else 0.0
     runtime_gain = 0.04 if runtime == "bcp-ready" else 0.03 if runtime == "ready-set" else 0.0
     if vpp_size > baseline_vpp_size:
@@ -257,9 +280,21 @@ def _bcp_stats(
     else:
         vpp_gain = 0.0
     group_penalty = 0.03 * max(0, 2 - group_size)
+    retain_count = sum(1 for _stage_idx, action in memory_actions if action == "retain")
+    recompute_count = sum(1 for _stage_idx, action in memory_actions if action == "recompute")
+    offload_count = sum(1 for _stage_idx, action in memory_actions if action == "offload")
+    seam_gain = min(0.04, 0.01 * len(cross_node_boundaries) + 0.012 * retain_count)
+    memory_action_penalty = 0.008 * recompute_count + 0.012 * offload_count
 
     predicted_critical_path = critical_path * (
-        1.0 - policy_gain - layout_gain - runtime_gain - vpp_gain + group_penalty
+        1.0
+        - policy_gain
+        - layout_gain
+        - runtime_gain
+        - vpp_gain
+        - seam_gain
+        + group_penalty
+        + memory_action_penalty
     )
     activation_violation = 0.0
     if budget.activation_peak_mb is not None:
@@ -368,6 +403,7 @@ def _trace_diagnostics(events: List[dict], vpp_size: int) -> Dict[str, Any]:
 
 def _candidate_quick_score(
     *,
+    policy: str,
     rewrite: str,
     group_size: int,
     vpp_size: int,
@@ -376,12 +412,17 @@ def _candidate_quick_score(
     has_layout: bool,
     has_placement: bool,
     diagnostics: Dict[str, Any],
+    topology_objective: float = 0.0,
+    memory_actions: Tuple[Tuple[int, str], ...] = (),
+    cross_node_boundaries: Tuple[int, ...] = (),
 ) -> float:
     score = 100.0
     exposed_wait = float(diagnostics["overlap"]["exposed_wait_ms"])
     chunk_count = max(1, len(diagnostics.get("hot_chunks", [])))
-    if rewrite == "front_loaded_group":
+    if rewrite == "front_loaded_group" or policy == "front-loaded":
         score -= 4.0 + min(8.0, exposed_wait * 0.2)
+    if rewrite == "seam_staggered_group" or policy == "seam-staggered":
+        score -= 5.0 + min(9.0, exposed_wait * 0.22)
     if rewrite == "change_group_size" and group_size != baseline_group_size:
         score -= 3.0
         if group_size >= 2:
@@ -392,7 +433,54 @@ def _candidate_quick_score(
         score -= 5.0
     if has_placement:
         score -= 2.0
+    if rewrite == "twincut_partition":
+        score -= 7.0 + min(10.0, exposed_wait * 0.1)
+        score += 0.01 * topology_objective
+    retain_count = sum(1 for _stage_idx, action in memory_actions if action == "retain")
+    offload_count = sum(1 for _stage_idx, action in memory_actions if action == "offload")
+    score -= min(3.0, 0.75 * retain_count + 0.35 * len(cross_node_boundaries))
+    score += min(2.0, 0.5 * offload_count)
     return score
+
+
+def _estimate_layer_costs(events: List[dict], num_layers: int, pipeline_parallel_size: int) -> Tuple[float, float]:
+    if num_layers <= 0 or pipeline_parallel_size <= 0:
+        return 1.0, 1.0
+    compute_events = [
+        float(event.get("elapsed_ms", 0.0))
+        for event in events
+        if str(event.get("name", ""))
+        in {"forward_step", "backward_step", "dgrad_compute", "wgrad_compute"}
+    ]
+    average_stage_compute_ms = sum(compute_events) / max(len(compute_events), 1)
+    average_layers_per_stage = max(float(num_layers) / float(pipeline_parallel_size), 1.0)
+    layer_time_ms = max(average_stage_compute_ms / average_layers_per_stage, 1e-3)
+    activation_peak_mb = _estimate_memory(events)
+    activation_mb_per_layer = max(activation_peak_mb / average_layers_per_stage, 1e-3)
+    return layer_time_ms, activation_mb_per_layer
+
+
+def _candidate_policies(
+    args,
+    *,
+    seam_pressure: float = 0.0,
+    memory_actions: Tuple[Tuple[int, str], ...] = (),
+    has_layout: bool = False,
+) -> List[str]:
+    policies = ["default"]
+    runtime = getattr(args, "runtime", "fixed")
+    if runtime == "fixed":
+        return policies
+    policies.append("front-loaded")
+    if seam_pressure > 0.0 or has_layout or memory_actions or runtime == "bcp-ready":
+        policies.append("seam-staggered")
+    deduped: List[str] = []
+    seen = set()
+    for item in policies:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped
 
 
 def _build_uniform_layout(num_layers: int, pipeline_parallel_size: int, vpp_size: int) -> str:
@@ -509,79 +597,216 @@ def _candidate_placements(args, proposals: List[Any]) -> List[Tuple[int, ...]]:
     return deduped
 
 
-def _candidate_group_sizes(args, proposals: List[Any], vpp_size: int) -> List[int]:
-    group_sizes = [args.microbatch_group_size]
+def _candidate_group_sizes(
+    args,
+    proposals: List[Any],
+    vpp_size: int,
+    *,
+    seam_pressure: float = 0.0,
+    memory_actions: Tuple[Tuple[int, str], ...] = (),
+) -> List[int]:
+    baseline_group_size = args.microbatch_group_size
+    max_group_size = max(1, int(getattr(args, "num_microbatches", baseline_group_size)))
+    group_sizes = [baseline_group_size]
     hinted = {item.target.get("search") for item in proposals if getattr(item, "target", None)}
-    if "microbatch_group_size" in hinted or "vpp_chunk_size" in hinted:
+    if (
+        "microbatch_group_size" in hinted
+        or "vpp_chunk_size" in hinted
+        or seam_pressure > 0.0
+        or memory_actions
+    ):
         for group_size in (1, 2, 4, 8):
-            if group_size != args.microbatch_group_size:
+            if group_size != baseline_group_size:
+                group_sizes.append(group_size)
+        for group_size in (
+            max(1, baseline_group_size // 2),
+            max(1, baseline_group_size - 1),
+            min(max_group_size, baseline_group_size + 1),
+            min(max_group_size, baseline_group_size + max(1, baseline_group_size // 2)),
+        ):
+            if group_size != baseline_group_size:
                 group_sizes.append(group_size)
     if vpp_size != args.num_model_chunks:
         for group_size in (max(1, args.pipeline_parallel_size // 2), args.pipeline_parallel_size):
-            if group_size != args.microbatch_group_size:
+            if group_size != baseline_group_size:
                 group_sizes.append(group_size)
+    if any(action == "retain" for _stage_idx, action in memory_actions):
+        group_sizes.append(max(1, min(max_group_size, baseline_group_size // 2)))
+    if any(action in {"recompute", "offload"} for _stage_idx, action in memory_actions):
+        group_sizes.append(min(max_group_size, baseline_group_size + 1))
     deduped: List[int] = []
     seen = set()
     for item in group_sizes:
+        if item < 1 or item > max_group_size:
+            continue
         if item not in seen:
             seen.add(item)
             deduped.append(item)
     return deduped
 
 
-def _build_candidate_specs(
+def _build_twincut_specs(
     args,
-    proposals: List[Any],
     diagnostics: Dict[str, Any],
+    events: List[dict],
+    vp_sizes: List[int],
+    twincut,
 ) -> List[CandidateSpec]:
-    placements = _candidate_placements(args, proposals)
-    vp_sizes = _candidate_vp_sizes(args, proposals)
-    specs: List[CandidateSpec] = [
-        CandidateSpec(
-            policy="default",
-            group_size=args.microbatch_group_size,
-            vpp_size=args.num_model_chunks,
-            layout=None,
-            placement=_default_placement(args.pipeline_parallel_size),
-            rewrite="baseline",
-            rationale=BCP_REWRITE_ALGEBRA["baseline"],
-        ),
-        CandidateSpec(
-            policy="front-loaded",
-            group_size=args.microbatch_group_size,
-            vpp_size=args.num_model_chunks,
-            layout=None,
-            placement=_default_placement(args.pipeline_parallel_size),
-            rewrite="front_loaded_group",
-            rationale=BCP_REWRITE_ALGEBRA["front_loaded_group"],
-        ),
-    ]
-    prioritized_vp_sizes = [item for item in vp_sizes if item != args.num_model_chunks]
-    prioritized_vp_sizes.extend(item for item in vp_sizes if item == args.num_model_chunks)
-    for vpp_size in prioritized_vp_sizes:
-        layouts = _candidate_layouts(args, proposals, vpp_size)
-        group_sizes = _candidate_group_sizes(args, proposals, vpp_size)
-        for group_size in group_sizes:
-            for layout in layouts:
-                for placement in placements:
-                    rewrite = "change_group_size"
-                    if vpp_size != args.num_model_chunks:
-                        rewrite = "change_vp_degree"
-                    if layout:
-                        rewrite = "boundary_layout"
-                    if placement != _default_placement(args.pipeline_parallel_size):
-                        rewrite = "node_local_placement"
+    if not getattr(args, "num_layers", None) or twincut is None or not events:
+        return []
+
+    layer_time_ms, activation_mb_per_layer = _estimate_layer_costs(
+        events,
+        args.num_layers,
+        args.pipeline_parallel_size,
+    )
+    exposed_wait_ms = float(diagnostics["overlap"]["exposed_wait_ms"])
+    p2p_credit_pressure = float(diagnostics.get("p2p_credit_pressure", 0.0))
+    placement = _default_placement(args.pipeline_parallel_size)
+    specs: List[CandidateSpec] = []
+    for vpp_size in vp_sizes:
+        try:
+            proposals = twincut.propose_twincut_specs(
+                num_layers=args.num_layers,
+                pipeline_parallel_size=args.pipeline_parallel_size,
+                vpp_size=vpp_size,
+                layer_time_ms=layer_time_ms,
+                activation_mb_per_layer=activation_mb_per_layer,
+                exposed_wait_ms=exposed_wait_ms,
+                p2p_credit_pressure=p2p_credit_pressure,
+                memory_budget_mb=args.memory_budget_mb,
+            )
+        except Exception:
+            continue
+        for proposal in proposals:
+            rewrite = "twincut_partition"
+            layout = twincut.build_pipeline_layout(proposal.segment_decoder_counts)
+            seam_pressure = exposed_wait_ms + 4.0 * len(proposal.cross_node_boundaries)
+            policies = _candidate_policies(
+                args,
+                seam_pressure=seam_pressure,
+                memory_actions=proposal.memory_actions,
+                has_layout=True,
+            )
+            group_sizes = _candidate_group_sizes(
+                args,
+                [],
+                vpp_size,
+                seam_pressure=seam_pressure,
+                memory_actions=proposal.memory_actions,
+            )
+            for policy in policies:
+                for group_size in group_sizes:
+                    quick_score = _candidate_quick_score(
+                        policy=policy,
+                        rewrite=rewrite,
+                        group_size=group_size,
+                        vpp_size=vpp_size,
+                        baseline_group_size=args.microbatch_group_size,
+                        baseline_vpp_size=args.num_model_chunks,
+                        has_layout=True,
+                        has_placement=False,
+                        diagnostics=diagnostics,
+                        topology_objective=proposal.objective,
+                        memory_actions=proposal.memory_actions,
+                        cross_node_boundaries=proposal.cross_node_boundaries,
+                    )
                     specs.append(
                         CandidateSpec(
-                            policy="default",
+                            policy=policy,
                             group_size=group_size,
                             vpp_size=vpp_size,
                             layout=layout,
                             placement=placement,
                             rewrite=rewrite,
-                            rationale=BCP_REWRITE_ALGEBRA[rewrite],
+                            rationale=BCP_REWRITE_ALGEBRA["twincut_partition"],
+                            quick_score=quick_score,
+                            twincut_name=proposal.name,
+                            segment_decoder_counts=proposal.segment_decoder_counts,
+                            segment_boundaries=proposal.segment_boundaries,
+                            cross_node_boundaries=proposal.cross_node_boundaries,
+                            node_assignment=proposal.node_assignment,
+                            vpp_packing=proposal.vpp_packing,
+                            memory_actions=proposal.memory_actions,
+                            topology_objective=proposal.objective,
                         )
                     )
+    return specs
+
+
+def _build_candidate_specs(
+    args,
+    proposals: List[Any],
+    diagnostics: Dict[str, Any],
+    events: List[dict] | None = None,
+    twincut=None,
+) -> List[CandidateSpec]:
+    placements = _candidate_placements(args, proposals)
+    vp_sizes = _candidate_vp_sizes(args, proposals)
+    default_placement = _default_placement(args.pipeline_parallel_size)
+    seam_pressure = float(diagnostics["overlap"]["exposed_wait_ms"])
+    base_policies = _candidate_policies(args, seam_pressure=seam_pressure)
+    specs: List[CandidateSpec] = []
+    for policy in base_policies:
+        if policy == "front-loaded":
+            rewrite = "front_loaded_group"
+        elif policy == "seam-staggered":
+            rewrite = "seam_staggered_group"
+        else:
+            rewrite = "baseline"
+        specs.append(
+            CandidateSpec(
+                policy=policy,
+                group_size=args.microbatch_group_size,
+                vpp_size=args.num_model_chunks,
+                layout=None,
+                placement=default_placement,
+                rewrite=rewrite,
+                rationale=BCP_REWRITE_ALGEBRA[rewrite],
+            )
+        )
+    prioritized_vp_sizes = [item for item in vp_sizes if item != args.num_model_chunks]
+    prioritized_vp_sizes.extend(item for item in vp_sizes if item == args.num_model_chunks)
+    for vpp_size in prioritized_vp_sizes:
+        layouts = _candidate_layouts(args, proposals, vpp_size)
+        group_sizes = _candidate_group_sizes(
+            args,
+            proposals,
+            vpp_size,
+            seam_pressure=seam_pressure,
+        )
+        for group_size in group_sizes:
+            for layout in layouts:
+                for placement in placements:
+                    policies = _candidate_policies(
+                        args,
+                        seam_pressure=seam_pressure,
+                        has_layout=bool(layout),
+                    )
+                    for policy in policies:
+                        rewrite = "change_group_size"
+                        if vpp_size != args.num_model_chunks:
+                            rewrite = "change_vp_degree"
+                        if layout:
+                            rewrite = "boundary_layout"
+                        if placement != default_placement:
+                            rewrite = "node_local_placement"
+                        if rewrite == "change_group_size" and group_size == args.microbatch_group_size:
+                            if policy == "front-loaded":
+                                rewrite = "front_loaded_group"
+                            elif policy == "seam-staggered":
+                                rewrite = "seam_staggered_group"
+                        specs.append(
+                            CandidateSpec(
+                                policy=policy,
+                                group_size=group_size,
+                                vpp_size=vpp_size,
+                                layout=layout,
+                                placement=placement,
+                                rewrite=rewrite,
+                                rationale=BCP_REWRITE_ALGEBRA[rewrite],
+                            )
+                        )
 
     deduped_specs: List[CandidateSpec] = []
     seen_specs = set()
@@ -591,14 +816,17 @@ def _build_candidate_specs(
             continue
         seen_specs.add(key)
         quick_score = _candidate_quick_score(
+            policy=spec.policy,
             rewrite=spec.rewrite,
             group_size=spec.group_size,
             vpp_size=spec.vpp_size,
             baseline_group_size=args.microbatch_group_size,
             baseline_vpp_size=args.num_model_chunks,
             has_layout=bool(spec.layout),
-            has_placement=spec.placement != _default_placement(args.pipeline_parallel_size),
+            has_placement=spec.placement != default_placement,
             diagnostics=diagnostics,
+            memory_actions=spec.memory_actions,
+            cross_node_boundaries=spec.cross_node_boundaries,
         )
         deduped_specs.append(
             CandidateSpec(
@@ -612,7 +840,73 @@ def _build_candidate_specs(
                 quick_score=quick_score,
             )
         )
-    return sorted(deduped_specs, key=lambda item: item.quick_score)[: max(1, args.candidate_budget)]
+
+    deduped_specs.extend(_build_twincut_specs(args, diagnostics, events or [], vp_sizes, twincut))
+
+    final_specs: List[CandidateSpec] = []
+    final_seen = set()
+    for spec in deduped_specs:
+        key = (
+            spec.policy,
+            spec.group_size,
+            spec.vpp_size,
+            spec.layout,
+            spec.placement,
+            spec.segment_boundaries,
+            spec.cross_node_boundaries,
+            spec.node_assignment,
+            spec.vpp_packing,
+            spec.memory_actions,
+        )
+        if key in final_seen:
+            continue
+        final_seen.add(key)
+        final_specs.append(spec)
+    ranked_specs = sorted(final_specs, key=lambda item: item.quick_score)
+    budget = max(1, args.candidate_budget)
+    diversified: List[CandidateSpec] = []
+    policy_seen = set()
+    for spec in ranked_specs:
+        if spec.policy in policy_seen:
+            continue
+        policy_seen.add(spec.policy)
+        diversified.append(spec)
+        if len(diversified) >= budget:
+            return diversified
+    diversified_seen = set()
+    for spec in diversified:
+        diversified_seen.add(
+            (
+                spec.policy,
+                spec.rewrite,
+                spec.vpp_size,
+                bool(spec.layout),
+                bool(spec.segment_boundaries),
+            )
+        )
+    for spec in ranked_specs:
+        if spec in diversified:
+            continue
+        family = (
+            spec.policy,
+            spec.rewrite,
+            spec.vpp_size,
+            bool(spec.layout),
+            bool(spec.segment_boundaries),
+        )
+        if family in diversified_seen:
+            continue
+        diversified_seen.add(family)
+        diversified.append(spec)
+        if len(diversified) >= budget:
+            return diversified
+    for spec in ranked_specs:
+        if spec in diversified:
+            continue
+        diversified.append(spec)
+        if len(diversified) >= budget:
+            break
+    return diversified
 
 
 def _build_task_dag(synth, events: List[dict], args, vpp_size: int) -> Tuple[Any, ...]:
@@ -770,6 +1064,9 @@ def _estimate_step_time(
     vpp_size: int,
     baseline_vpp_size: int,
     layout: str | None,
+    memory_actions: Tuple[Tuple[int, str], ...] = (),
+    cross_node_boundaries: Tuple[int, ...] = (),
+    topology_objective: float = 0.0,
 ) -> float:
     rank_totals: Dict[int, float] = {}
     p2p_wait = 0.0
@@ -787,7 +1084,12 @@ def _estimate_step_time(
     # A conservative model: front-loaded can reduce warmup skew but may not help
     # steady state. Smaller group sizes expose more interleaving but can increase
     # communication pressure.
-    policy_factor = 0.97 if policy == "front-loaded" else 1.0
+    if policy == "front-loaded":
+        policy_factor = 0.97
+    elif policy == "seam-staggered":
+        policy_factor = 0.94
+    else:
+        policy_factor = 1.0
     group_penalty = 1.0 + max(0, 2 - group_size) * 0.03
     if vpp_size > baseline_vpp_size:
         vpp_factor = 1.0 - min(0.08, 0.025 * (vpp_size - baseline_vpp_size))
@@ -796,9 +1098,25 @@ def _estimate_step_time(
     else:
         vpp_factor = 1.0
     layout_factor = 0.96 if layout else 1.0
+    retain_count = sum(1 for _stage_idx, action in memory_actions if action == "retain")
+    recompute_count = sum(1 for _stage_idx, action in memory_actions if action == "recompute")
+    offload_count = sum(1 for _stage_idx, action in memory_actions if action == "offload")
+    seam_factor = 1.0 - min(0.03, 0.01 * len(cross_node_boundaries) + 0.01 * retain_count)
+    memory_action_factor = 1.0 + 0.008 * recompute_count + 0.012 * offload_count
+    topology_factor = 1.0
+    if layout and topology_objective > 0.0:
+        topology_factor -= min(0.04, 4.0 / max(topology_objective, 100.0))
     unchanged_penalty = 1.02 if vpp_size == baseline_vpp_size and layout is None else 1.0
     return (
-        max_rank_time * policy_factor * group_penalty * vpp_factor * layout_factor * unchanged_penalty
+        max_rank_time
+        * policy_factor
+        * group_penalty
+        * vpp_factor
+        * layout_factor
+        * seam_factor
+        * memory_action_factor
+        * topology_factor
+        * unchanged_penalty
         + 0.35 * p2p_wait
         + 0.1 * sync_wait
     )
@@ -806,11 +1124,8 @@ def _estimate_step_time(
 
 def _build_candidate(
     synth,
-    policy: str,
-    group_size: int,
-    vpp_size: int,
-    layout: str | None,
-    placement: Tuple[int, ...],
+    twincut,
+    spec: CandidateSpec,
     args,
     rewrites: List[dict],
     events: List[dict],
@@ -826,35 +1141,58 @@ def _build_candidate(
         "enable_ready_set_dispatch",
     }
     candidate = synth.build_strategy_schedule_table(
-        policy,
+        spec.policy,
         synth.StrategyConstraints(
             num_microbatches=args.num_microbatches,
-            num_model_chunks=vpp_size,
-            microbatch_group_size=group_size,
+            num_model_chunks=spec.vpp_size,
+            microbatch_group_size=spec.group_size,
             pipeline_parallel_size=args.pipeline_parallel_size,
         ),
     )
+    layout = spec.layout
+    if spec.segment_decoder_counts:
+        layout = twincut.build_pipeline_layout(spec.segment_decoder_counts)
     step_time = _estimate_step_time(
         events,
-        group_size,
+        spec.group_size,
         candidate.name,
-        vpp_size,
+        spec.vpp_size,
         args.num_model_chunks,
         layout,
+        spec.memory_actions,
+        spec.cross_node_boundaries,
+        spec.topology_objective,
     )
     bcp = _bcp_stats(
         events,
-        group_size=group_size,
+        group_size=spec.group_size,
         policy=candidate.name,
-        vpp_size=vpp_size,
+        vpp_size=spec.vpp_size,
         baseline_vpp_size=args.num_model_chunks,
         layout=layout,
         runtime=args.runtime,
         budget=budget,
+        memory_actions=spec.memory_actions,
+        cross_node_boundaries=spec.cross_node_boundaries,
     )
-    tasks = _build_task_dag(synth, events, args, vpp_size)
+    tasks = _build_task_dag(synth, events, args, spec.vpp_size)
     task_dag_critical_path = _task_dag_critical_path_ms(tasks)
     estimated_peak_memory_mb = _estimate_memory(events)
+    topology_breakdown: Dict[str, float] = {}
+    if spec.segment_decoder_counts and spec.node_assignment:
+        layer_time_ms, activation_mb_per_layer = _estimate_layer_costs(
+            events,
+            args.num_layers or sum(spec.segment_decoder_counts),
+            args.pipeline_parallel_size,
+        )
+        topology_breakdown = twincut.estimate_cost(
+            spec.segment_decoder_counts,
+            spec.node_assignment,
+            layer_time_ms=layer_time_ms,
+            activation_mb_per_layer=activation_mb_per_layer,
+            exposed_wait_ms=bcp.exposed_p2p_wait_ms,
+            p2p_credit_pressure=bcp.p2p_credit_pressure,
+        )
     runtime_policy = {
         "runtime": args.runtime,
         "allow_out_of_order_p2p": False,
@@ -862,7 +1200,7 @@ def _build_candidate(
     }
     plan = synth.strategy_candidate_to_plan(
         candidate,
-        microbatch_group_size=group_size,
+        microbatch_group_size=spec.group_size,
         runtime_policy=runtime_policy,
         rewrites=tuple(
             synth.StrategyRewrite(
@@ -891,14 +1229,27 @@ def _build_candidate(
             "objective": args.objective,
             "layout_kind": "custom" if layout else "default",
             "baseline_num_virtual_stages_per_pipeline_rank": args.num_model_chunks,
+            "twincut_name": spec.twincut_name or None,
+            "twincut_topology_objective": spec.topology_objective,
+            "twincut_cost_breakdown": topology_breakdown,
+            "num_decoder_layers": args.num_layers,
         },
     )
     plan = plan.__class__(
-        name=f"{plan.name}-vp{vpp_size}-g{group_size}" + ("-layout" if layout else ""),
+        name=(
+            f"{plan.name}-vp{spec.vpp_size}-g{spec.group_size}"
+            + ("-layout" if layout else "")
+            + (f"-{spec.twincut_name}" if spec.twincut_name else "")
+        ),
         schedule_table=plan.schedule_table,
         pipeline_layout=layout,
-        num_virtual_stages_per_pipeline_rank=vpp_size,
-        placement=placement,
+        num_virtual_stages_per_pipeline_rank=spec.vpp_size,
+        placement=spec.placement,
+        segment_boundaries=spec.segment_boundaries,
+        cross_node_boundaries=spec.cross_node_boundaries,
+        node_assignment=spec.node_assignment,
+        vpp_packing=spec.vpp_packing,
+        memory_actions=spec.memory_actions,
         microbatch_group_size=plan.microbatch_group_size,
         checkpoint_policy=plan.checkpoint_policy,
         wgrad_policy=plan.wgrad_policy,
@@ -910,8 +1261,8 @@ def _build_candidate(
     synth.StrategyVerifier(
         synth.StrategyConstraints(
             num_microbatches=args.num_microbatches,
-            num_model_chunks=vpp_size,
-            microbatch_group_size=group_size,
+            num_model_chunks=spec.vpp_size,
+            microbatch_group_size=spec.group_size,
             pipeline_parallel_size=args.pipeline_parallel_size,
         ),
         memory_budget_mb=args.memory_budget_mb,
@@ -968,6 +1319,10 @@ def main() -> None:
         "strategy_synthesizer",
         "megatron/core/pipeline_parallel/strategy_synthesizer.py",
     )
+    twincut = _load_module(
+        "twincut_partition",
+        "megatron/core/pipeline_parallel/twincut_partition.py",
+    )
     agent = _load_module("pipeline_strategy_agent", "tools/pipeline_strategy_agent.py")
 
     events = agent.load_events(args.trace)
@@ -998,7 +1353,7 @@ def main() -> None:
         proposals = agent.propose_rewrites(bottlenecks)
 
     diagnostics = _trace_diagnostics(events, args.num_model_chunks)
-    candidate_specs = _build_candidate_specs(args, proposals, diagnostics)
+    candidate_specs = _build_candidate_specs(args, proposals, diagnostics, events, twincut)
 
     accepted = []
     rejected = []
@@ -1007,11 +1362,8 @@ def main() -> None:
         try:
             plan = _build_candidate(
                 synth,
-                spec.policy,
-                spec.group_size,
-                spec.vpp_size,
-                spec.layout,
-                spec.placement,
+                twincut,
+                spec,
                 args,
                 proposal_payload,
                 events,
@@ -1031,6 +1383,11 @@ def main() -> None:
                 pipeline_layout=plan.pipeline_layout,
                 num_virtual_stages_per_pipeline_rank=plan.num_virtual_stages_per_pipeline_rank,
                 placement=plan.placement,
+                segment_boundaries=getattr(plan, "segment_boundaries", ()),
+                cross_node_boundaries=getattr(plan, "cross_node_boundaries", ()),
+                node_assignment=getattr(plan, "node_assignment", ()),
+                vpp_packing=getattr(plan, "vpp_packing", ()),
+                memory_actions=getattr(plan, "memory_actions", ()),
                 microbatch_group_size=plan.microbatch_group_size,
                 checkpoint_policy=plan.checkpoint_policy,
                 wgrad_policy=plan.wgrad_policy,

@@ -100,7 +100,9 @@ class BubbleFillWork:
     name: str
     run: Callable[[], None]
     priority: float = 0.0
+    criticality: float = 0.0
     estimated_ms: float = 0.0
+    harmful_overlap_penalty: float = 0.0
     memory_mb: float = 0.0
 
 
@@ -112,6 +114,10 @@ class BubbleFillResult:
     ran: bool
     elapsed_ms: float = 0.0
     reason: str = ""
+    score: float = 0.0
+    expected_wait_ms: float = 0.0
+    predicted_hidden_ms: float = 0.0
+    predicted_overrun_ms: float = 0.0
 
 
 @dataclass
@@ -128,7 +134,14 @@ class BCPReadyRuntime:
     p2p_credit_budget: Optional[int] = None
     memory_budget_mb: Optional[float] = None
     min_wait_to_fill_ms: float = 0.0
+    ewma_alpha: float = 0.2
+    fill_score_threshold: float = 0.0
+    overrun_penalty_weight: float = 0.7
+    credit_penalty_weight: float = 2.0
+    memory_penalty_weight: float = 0.01
     work: list[BubbleFillWork] = field(default_factory=list)
+    wait_ewma_ms: Dict[str, float] = field(default_factory=dict)
+    fill_ewma_ms: Dict[str, float] = field(default_factory=dict)
     outstanding_p2p: int = 0
     fill_attempts: int = 0
     fill_runs: int = 0
@@ -147,6 +160,96 @@ class BCPReadyRuntime:
     def mark_p2p_completed(self, count: int = 1) -> None:
         self.outstanding_p2p = max(0, self.outstanding_p2p - max(0, count))
 
+    def _update_ewma(self, table: Dict[str, float], key: str, value: float) -> None:
+        value = max(0.0, float(value))
+        if key not in table:
+            table[key] = value
+            return
+        alpha = min(max(self.ewma_alpha, 0.0), 1.0)
+        table[key] = (1.0 - alpha) * table[key] + alpha * value
+
+    def observe_wait(
+        self,
+        event_name: str,
+        wait_ms: float,
+        fill_result: Optional[BubbleFillResult] = None,
+    ) -> None:
+        """Feed measured residual P2P wait back into the online model."""
+
+        self._update_ewma(self.wait_ewma_ms, event_name, wait_ms)
+        if fill_result is not None and fill_result.ran:
+            self._update_ewma(self.fill_ewma_ms, fill_result.name, fill_result.elapsed_ms)
+
+    def estimate_wait_ms(self, event_name: str, fallback_ms: Optional[float] = None) -> float:
+        if fallback_ms is not None:
+            return max(0.0, float(fallback_ms))
+        return self.wait_ewma_ms.get(event_name, 0.0)
+
+    def _estimate_work_ms(self, work: BubbleFillWork) -> float:
+        if work.estimated_ms > 0:
+            return work.estimated_ms
+        return self.fill_ewma_ms.get(work.name, 0.0)
+
+    def score_work(
+        self,
+        work: BubbleFillWork,
+        *,
+        event_name: str,
+        expected_wait_ms: Optional[float] = None,
+    ) -> BubbleFillResult:
+        """Score one local-safe work item for the current P2P wait window.
+
+        The score estimates effective overlap, not visual overlap. Work is
+        preferred when it is likely to be hidden by the residual P2P wait and
+        unlikely to overrun, add harmful contention, or violate credit/memory
+        bounds.
+        """
+
+        expected_wait = self.estimate_wait_ms(event_name, expected_wait_ms)
+        can_run, reason = self._can_run(work, expected_wait)
+        if not can_run:
+            return BubbleFillResult(name=work.name, ran=False, reason=reason)
+
+        work_ms = self._estimate_work_ms(work)
+        if work_ms <= 0:
+            work_ms = max(expected_wait, self.min_wait_to_fill_ms)
+        hidden_ms = min(expected_wait, work_ms)
+        overrun_ms = max(0.0, work_ms - expected_wait)
+        if self.p2p_credit_budget is None or self.p2p_credit_budget <= 0:
+            credit_pressure = 0.0
+        else:
+            credit_pressure = self.outstanding_p2p / max(float(self.p2p_credit_budget), 1.0)
+        memory_pressure = 0.0
+        if self.memory_budget_mb is not None and self.memory_budget_mb > 0:
+            memory_pressure = work.memory_mb / max(float(self.memory_budget_mb), 1.0)
+        score = (
+            hidden_ms
+            + work.priority
+            + work.criticality
+            - self.overrun_penalty_weight * overrun_ms
+            - work.harmful_overlap_penalty
+            - self.credit_penalty_weight * credit_pressure
+            - self.memory_penalty_weight * memory_pressure
+        )
+        if score < self.fill_score_threshold:
+            return BubbleFillResult(
+                name=work.name,
+                ran=False,
+                reason="score_below_threshold",
+                score=score,
+                expected_wait_ms=expected_wait,
+                predicted_hidden_ms=hidden_ms,
+                predicted_overrun_ms=overrun_ms,
+            )
+        return BubbleFillResult(
+            name=work.name,
+            ran=False,
+            score=score,
+            expected_wait_ms=expected_wait,
+            predicted_hidden_ms=hidden_ms,
+            predicted_overrun_ms=overrun_ms,
+        )
+
     def _can_run(self, work: BubbleFillWork, expected_wait_ms: Optional[float]) -> tuple[bool, str]:
         if not self.enabled:
             return False, "runtime_disabled"
@@ -158,30 +261,54 @@ class BCPReadyRuntime:
             return False, "memory_budget_exceeded"
         return True, ""
 
-    def pop_fill_work(self, expected_wait_ms: Optional[float] = None) -> BubbleFillWork | None:
+    def pop_fill_work(
+        self,
+        *,
+        event_name: str,
+        expected_wait_ms: Optional[float] = None,
+    ) -> tuple[BubbleFillWork | None, BubbleFillResult]:
         remaining: list[BubbleFillWork] = []
         selected: BubbleFillWork | None = None
+        selected_decision = BubbleFillResult(name="", ran=False, reason="no_work")
+        best_rejected = selected_decision
         for item in self.work:
-            can_run, _reason = self._can_run(item, expected_wait_ms)
-            if selected is None and can_run:
+            decision = self.score_work(
+                item,
+                event_name=event_name,
+                expected_wait_ms=expected_wait_ms,
+            )
+            if (
+                not decision.reason
+                and (selected is None or decision.score > selected_decision.score)
+            ):
+                if selected is not None:
+                    remaining.append(selected)
                 selected = item
+                selected_decision = decision
             else:
+                if decision.reason and (
+                    best_rejected.reason == "no_work" or decision.score > best_rejected.score
+                ):
+                    best_rejected = decision
                 remaining.append(item)
         self.work = remaining
-        return selected
+        return selected, selected_decision if selected is not None else best_rejected
 
     def run_one_fill(
         self,
         timer_factory: Callable[[], object],
+        event_name: str = "",
         expected_wait_ms: Optional[float] = None,
     ) -> BubbleFillResult:
         self.fill_attempts += 1
         if not self.work:
             return BubbleFillResult(name="", ran=False, reason="no_work")
-        item = self.pop_fill_work(expected_wait_ms)
+        item, decision = self.pop_fill_work(
+            event_name=event_name,
+            expected_wait_ms=expected_wait_ms,
+        )
         if item is None:
-            _can_run, reason = self._can_run(self.work[0], expected_wait_ms)
-            return BubbleFillResult(name=self.work[0].name, ran=False, reason=reason)
+            return decision
 
         with timer_factory() as timer:
             item.run()
@@ -190,4 +317,8 @@ class BCPReadyRuntime:
             name=item.name,
             ran=True,
             elapsed_ms=float(getattr(timer, "elapsed_ms", 0.0)),
+            score=decision.score,
+            expected_wait_ms=decision.expected_wait_ms,
+            predicted_hidden_ms=decision.predicted_hidden_ms,
+            predicted_overrun_ms=decision.predicted_overrun_ms,
         )

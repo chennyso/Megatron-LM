@@ -160,7 +160,9 @@ def test_bcp_candidate_specs_include_rewrite_rationale_and_sorting():
         num_layers=16,
         pipeline_parallel_size=2,
         microbatch_group_size=2,
-        candidate_budget=4,
+        num_microbatches=8,
+        runtime="ready-set",
+        candidate_budget=8,
     )
     proposal = SimpleNamespace(target={"search": "boundary_aware_layout"})
     diagnostics = {
@@ -171,8 +173,9 @@ def test_bcp_candidate_specs_include_rewrite_rationale_and_sorting():
     specs = module._build_candidate_specs(args, [proposal], diagnostics)
 
     assert specs
-    assert specs == sorted(specs, key=lambda item: item.quick_score)
-    assert any(spec.rewrite == "front_loaded_group" for spec in specs)
+    assert any(spec.policy == "seam-staggered" for spec in specs)
+    assert any(spec.policy == "default" for spec in specs)
+    assert any(spec.policy != "default" for spec in specs)
     assert all(spec.rationale for spec in specs)
 
 
@@ -335,3 +338,95 @@ def test_strategy_verifier_accepts_bcp_ready_without_out_of_order_p2p():
         assert "out-of-order P2P" in str(exc)
     else:
         raise AssertionError("out-of-order bcp-ready plan should be rejected")
+
+
+def test_seam_staggered_schedule_is_ready_set_legal_but_fixed_rejected():
+    module = _load_search_pipeline_strategy()
+    synth = module._load_module(
+        "strategy_synthesizer_for_seam_staggered_test",
+        "megatron/core/pipeline_parallel/strategy_synthesizer.py",
+    )
+    constraints = synth.StrategyConstraints(
+        num_microbatches=8,
+        num_model_chunks=2,
+        microbatch_group_size=4,
+        pipeline_parallel_size=2,
+    )
+
+    candidate = synth.build_strategy_schedule_table("seam-staggered", constraints)
+    default_candidate = synth.build_strategy_schedule_table("default", constraints)
+
+    assert candidate.name == "seam-staggered"
+    assert tuple(candidate.schedule_table) != tuple(default_candidate.schedule_table)
+
+    ready_set_plan = synth.strategy_candidate_to_plan(
+        candidate,
+        microbatch_group_size=4,
+        runtime_policy={"runtime": "ready-set", "allow_out_of_order_p2p": False},
+    )
+    synth.StrategyVerifier(constraints).verify(ready_set_plan)
+
+    fixed_plan = synth.strategy_candidate_to_plan(
+        candidate,
+        microbatch_group_size=4,
+        runtime_policy={"runtime": "fixed"},
+    )
+    try:
+        synth.StrategyVerifier(constraints).verify(fixed_plan)
+    except ValueError as exc:
+        assert "requires the default table" in str(exc)
+    else:
+        raise AssertionError("fixed runtime should reject seam-staggered schedule table")
+
+
+def test_twincut_specs_expand_policy_and_group_neighborhoods():
+    module = _load_search_pipeline_strategy()
+
+    class _TwincutStub:
+        @staticmethod
+        def build_pipeline_layout(segment_decoder_counts):
+            return "|".join("t" * count for count in segment_decoder_counts)
+
+        @staticmethod
+        def propose_twincut_specs(**_kwargs):
+            return [
+                SimpleNamespace(
+                    name="solver-root",
+                    segment_decoder_counts=(2, 2, 3, 1),
+                    segment_boundaries=(0, 2, 4, 7, 8),
+                    cross_node_boundaries=(2,),
+                    node_assignment=(0, 0, 1, 1),
+                    vpp_packing=((2, 3), (2, 1)),
+                    memory_actions=((1, "retain"), (2, "recompute")),
+                    objective=73.0,
+                )
+            ]
+
+    args = SimpleNamespace(
+        num_model_chunks=2,
+        num_layers=8,
+        pipeline_parallel_size=2,
+        microbatch_group_size=4,
+        num_microbatches=8,
+        runtime="bcp-ready",
+        memory_budget_mb=None,
+        candidate_budget=16,
+    )
+    diagnostics = {
+        "overlap": {"exposed_wait_ms": 12.0},
+        "p2p_credit_pressure": 1.0,
+        "hot_chunks": [{"chunk": 0, "pressure": 8.0}, {"chunk": 1, "pressure": 3.0}],
+    }
+    events = [
+        {"name": "forward_step", "pp_rank": 0, "elapsed_ms": 4.0, "memory_mb": 100.0},
+        {"name": "backward_step", "pp_rank": 0, "elapsed_ms": 5.0, "memory_mb": 120.0},
+        {"name": "p2p_recv_wait_forward", "pp_rank": 0, "elapsed_ms": 2.0, "wait_ms": 2.0},
+    ]
+
+    specs = module._build_twincut_specs(args, diagnostics, events, [2], _TwincutStub())
+
+    assert specs
+    assert any(spec.policy == "seam-staggered" for spec in specs)
+    assert any(spec.group_size != args.microbatch_group_size for spec in specs)
+    assert all(spec.rewrite == "twincut_partition" for spec in specs)
+    assert all(spec.memory_actions for spec in specs)

@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 from types import SimpleNamespace
 
@@ -62,3 +63,27 @@ def test_strategy_plan_overrides_virtual_pipeline_degree_without_layout():
     assert args.num_virtual_stages_per_pipeline_rank == 8
     assert args.num_layers_per_virtual_pipeline_stage is None
     assert args.microbatch_group_size_per_vp_stage == 4
+
+
+def test_strategy_policy_argument_accepts_seam_staggered():
+    from megatron.training.arguments import parse_args
+
+    argv = [
+        "test-parse-args",
+        "--num-layers", "8",
+        "--hidden-size", "128",
+        "--num-attention-heads", "4",
+        "--max-position-embeddings", "128",
+        "--micro-batch-size", "1",
+        "--pipeline-model-parallel-size", "2",
+        "--pipeline-strategy-policy", "seam-staggered",
+    ]
+
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        args = parse_args(ignore_unknown_args=True)
+    finally:
+        sys.argv = old_argv
+
+    assert args.pipeline_strategy_policy == "seam-staggered"

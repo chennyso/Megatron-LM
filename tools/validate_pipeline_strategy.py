@@ -24,7 +24,11 @@ def _load_strategy_module():
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--policy", default="default", choices=["default", "front-loaded"])
+    parser.add_argument(
+        "--policy",
+        default="default",
+        choices=["default", "front-loaded", "seam-staggered"],
+    )
     parser.add_argument("--plan", default=None, help="Optional StrategyPlan JSON to validate")
     parser.add_argument("--num-microbatches", type=int, required=True)
     parser.add_argument("--num-model-chunks", type=int, required=True)

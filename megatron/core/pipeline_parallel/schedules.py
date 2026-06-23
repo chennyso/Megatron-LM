@@ -955,6 +955,11 @@ def get_schedule_table(
             pipeline_layout=plan.pipeline_layout,
             num_virtual_stages_per_pipeline_rank=plan.num_virtual_stages_per_pipeline_rank,
             placement=plan.placement,
+            segment_boundaries=getattr(plan, "segment_boundaries", ()),
+            cross_node_boundaries=getattr(plan, "cross_node_boundaries", ()),
+            node_assignment=getattr(plan, "node_assignment", ()),
+            vpp_packing=getattr(plan, "vpp_packing", ()),
+            memory_actions=getattr(plan, "memory_actions", ()),
             microbatch_group_size=plan.microbatch_group_size,
             checkpoint_policy=plan.checkpoint_policy,
             wgrad_policy=plan.wgrad_policy,
@@ -1290,6 +1295,7 @@ def forward_backward_pipelining_with_interleaving(
             )
         fill_result = bcp_ready_runtime.run_one_fill(
             CudaTimer,
+            event_name=event_name,
             expected_wait_ms=metadata.get("expected_wait_ms"),
         )
         if strategy_trace.enabled:
@@ -1300,6 +1306,10 @@ def forward_backward_pipelining_with_interleaving(
                 fill_name=fill_result.name,
                 fill_ran=fill_result.ran,
                 fill_reason=fill_result.reason,
+                fill_score=fill_result.score,
+                expected_wait_ms=fill_result.expected_wait_ms,
+                predicted_hidden_ms=fill_result.predicted_hidden_ms,
+                predicted_overrun_ms=fill_result.predicted_overrun_ms,
                 trigger_event=event_name,
                 outstanding_p2p=bcp_ready_runtime.outstanding_p2p,
                 **metadata,
@@ -1311,6 +1321,7 @@ def forward_backward_pipelining_with_interleaving(
         with CudaTimer() as wait_timer:
             handle.wait()
         bcp_ready_runtime.mark_p2p_completed()
+        bcp_ready_runtime.observe_wait(event_name, wait_timer.elapsed_ms, fill_result)
         strategy_trace.record(
             event_name,
             wait_timer.elapsed_ms,
@@ -1320,6 +1331,10 @@ def forward_backward_pipelining_with_interleaving(
             bcp_fill_elapsed_ms=fill_result.elapsed_ms,
             bcp_fill_name=fill_result.name,
             bcp_fill_reason=fill_result.reason,
+            bcp_fill_score=fill_result.score,
+            bcp_expected_wait_ms=fill_result.expected_wait_ms,
+            bcp_predicted_hidden_ms=fill_result.predicted_hidden_ms,
+            bcp_predicted_overrun_ms=fill_result.predicted_overrun_ms,
             outstanding_p2p=bcp_ready_runtime.outstanding_p2p,
             **metadata,
         )

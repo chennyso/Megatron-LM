@@ -81,6 +81,11 @@ class StrategyPlan:
     pipeline_layout: Optional[str] = None
     num_virtual_stages_per_pipeline_rank: Optional[int] = None
     placement: Tuple[int, ...] = ()
+    segment_boundaries: Tuple[int, ...] = ()
+    cross_node_boundaries: Tuple[int, ...] = ()
+    node_assignment: Tuple[int, ...] = ()
+    vpp_packing: Tuple[Tuple[int, ...], ...] = ()
+    memory_actions: Tuple[Tuple[int, str], ...] = ()
     microbatch_group_size: int = 0
     checkpoint_policy: Dict[str, Any] = field(default_factory=dict)
     wgrad_policy: Dict[str, Any] = field(default_factory=dict)
@@ -211,6 +216,15 @@ def strategy_plan_from_dict(payload: Dict[str, Any]) -> StrategyPlan:
             else None
         ),
         placement=tuple(int(item) for item in payload.get("placement", ())),
+        segment_boundaries=tuple(int(item) for item in payload.get("segment_boundaries", ())),
+        cross_node_boundaries=tuple(int(item) for item in payload.get("cross_node_boundaries", ())),
+        node_assignment=tuple(int(item) for item in payload.get("node_assignment", ())),
+        vpp_packing=tuple(
+            tuple(int(count) for count in row) for row in payload.get("vpp_packing", ())
+        ),
+        memory_actions=tuple(
+            (int(item[0]), str(item[1])) for item in payload.get("memory_actions", ())
+        ),
         microbatch_group_size=int(payload.get("microbatch_group_size", 0)),
         checkpoint_policy=dict(payload.get("checkpoint_policy", {})),
         wgrad_policy=dict(payload.get("wgrad_policy", {})),
@@ -312,6 +326,7 @@ class StrategyVerifier:
             self._verify_tasks(candidate)
             self._verify_runtime_policy(candidate)
             self._verify_parallel_shape(candidate)
+            self._verify_structured_partition(candidate)
             self._verify_backend_schedule_table(candidate)
             self._verify_memory(candidate)
 
@@ -454,6 +469,103 @@ class StrategyVerifier:
                     f"plan VP={plan_vp_size} conflicts with pipeline_layout VP={layout_vp_size}"
                 )
 
+    def _verify_structured_partition(self, plan: StrategyPlan) -> None:
+        stage_count = self.constraints.pipeline_parallel_size * self.constraints.num_model_chunks
+        if plan.segment_boundaries:
+            boundaries = plan.segment_boundaries
+            if len(boundaries) != stage_count + 1:
+                raise ValueError(
+                    f"segment_boundaries length {len(boundaries)} must equal stage_count+1 "
+                    f"({stage_count + 1})"
+                )
+            if boundaries[0] != 0:
+                raise ValueError("segment_boundaries must start at 0")
+            for left, right in zip(boundaries, boundaries[1:]):
+                if right <= left:
+                    raise ValueError(
+                        f"segment_boundaries must be strictly increasing, got {left}, {right}"
+                    )
+
+        if plan.node_assignment:
+            if len(plan.node_assignment) != stage_count:
+                raise ValueError(
+                    f"node_assignment length {len(plan.node_assignment)} must match stage_count "
+                    f"{stage_count}"
+                )
+            if any(node < 0 for node in plan.node_assignment):
+                raise ValueError("node_assignment values must be non-negative")
+
+        if plan.cross_node_boundaries:
+            for boundary in plan.cross_node_boundaries:
+                if not 0 < boundary < stage_count:
+                    raise ValueError(
+                        f"cross_node boundary {boundary} must be within (0, {stage_count})"
+                    )
+            if plan.node_assignment:
+                expected = tuple(
+                    idx
+                    for idx in range(1, len(plan.node_assignment))
+                    if plan.node_assignment[idx] != plan.node_assignment[idx - 1]
+                )
+                if tuple(plan.cross_node_boundaries) != expected:
+                    raise ValueError(
+                        "cross_node_boundaries do not match node_assignment transitions: "
+                        f"{plan.cross_node_boundaries} vs {expected}"
+                    )
+
+        if plan.vpp_packing:
+            if len(plan.vpp_packing) != self.constraints.pipeline_parallel_size:
+                raise ValueError(
+                    f"vpp_packing row count {len(plan.vpp_packing)} must match pipeline size "
+                    f"{self.constraints.pipeline_parallel_size}"
+                )
+            for row in plan.vpp_packing:
+                if len(row) != self.constraints.num_model_chunks:
+                    raise ValueError(
+                        "each vpp_packing row must have "
+                        f"{self.constraints.num_model_chunks} entries"
+                    )
+                if any(count <= 0 for count in row):
+                    raise ValueError(f"vpp_packing counts must be positive, got {row}")
+
+        if plan.segment_boundaries and plan.vpp_packing:
+            boundary_counts = tuple(
+                right - left for left, right in zip(plan.segment_boundaries, plan.segment_boundaries[1:])
+            )
+            packing_counts = tuple(count for row in plan.vpp_packing for count in row)
+            if packing_counts != boundary_counts:
+                raise ValueError(
+                    "vpp_packing does not match segment boundaries: "
+                    f"{packing_counts} vs {boundary_counts}"
+                )
+
+        if plan.pipeline_layout and plan.segment_boundaries:
+            layout_segments = plan.pipeline_layout.split("|")
+            if len(layout_segments) != stage_count:
+                raise ValueError(
+                    f"pipeline_layout stage count {len(layout_segments)} must match stage_count "
+                    f"{stage_count}"
+                )
+            layout_counts = tuple(segment.count("t") for segment in layout_segments)
+            boundary_counts = tuple(
+                right - left for left, right in zip(plan.segment_boundaries, plan.segment_boundaries[1:])
+            )
+            if layout_counts != boundary_counts:
+                raise ValueError(
+                    "pipeline_layout decoder counts do not match segment boundaries: "
+                    f"{layout_counts} vs {boundary_counts}"
+                )
+
+        if plan.memory_actions:
+            legal_actions = {"retain", "recompute", "offload", "checkpoint", "none"}
+            for stage_idx, action in plan.memory_actions:
+                if not 0 <= stage_idx < stage_count:
+                    raise ValueError(
+                        f"memory action stage index {stage_idx} must be within [0, {stage_count})"
+                    )
+                if action not in legal_actions:
+                    raise ValueError(f"unsupported memory action {action}")
+
     def _verify_backend_schedule_table(self, plan: StrategyPlan) -> None:
         """Reject tables the current Megatron VPP loop cannot execute safely.
 
@@ -519,6 +631,34 @@ def _default_schedule_table(
     return schedule_table
 
 
+def _grouped_schedule_table(
+    num_microbatches: int,
+    num_model_chunks: int,
+    group_sizes: List[int],
+) -> List[ScheduleEntry]:
+    """Compile a monotonic microbatch partition into a legal grouped schedule."""
+
+    schedule_table: List[ScheduleEntry] = []
+    cursor = 0
+    for group_size in group_sizes:
+        if group_size <= 0:
+            raise ValueError(f"group sizes must be positive, got {group_size}")
+        if cursor >= num_microbatches:
+            break
+        end = min(num_microbatches, cursor + group_size)
+        schedule_table.extend(
+            (microbatch_id, model_chunk_id)
+            for model_chunk_id in range(num_model_chunks)
+            for microbatch_id in range(cursor, end)
+        )
+        cursor = end
+    if cursor != num_microbatches:
+        raise ValueError(
+            f"group sizes {group_sizes} cover {cursor} microbatches; expected {num_microbatches}"
+        )
+    return schedule_table
+
+
 def _front_loaded_schedule_table(
     num_microbatches: int, num_model_chunks: int, microbatch_group_size: int
 ) -> List[ScheduleEntry]:
@@ -548,6 +688,54 @@ def _front_loaded_schedule_table(
     return schedule_table
 
 
+def _seam_staggered_schedule_table(
+    num_microbatches: int,
+    num_model_chunks: int,
+    microbatch_group_size: int,
+) -> List[ScheduleEntry]:
+    """Shrink warmup/cooldown groups and thicken the steady-state wave.
+
+    This policy keeps both Megatron backend invariants intact:
+    1. each chunk still sees monotonically increasing microbatches
+    2. each microbatch still traverses chunks in increasing order
+
+    The only freedom we exercise is how microbatches are partitioned into
+    grouped chunk sweeps. Relative to `front-loaded`, this policy also shrinks
+    the tail wave and pushes those microbatches into the interior groups, which
+    better matches dual-node seam-heavy runs where warmup and cooldown both
+    expose cross-node bubbles.
+    """
+
+    if num_microbatches <= 1 or microbatch_group_size <= 1:
+        return _default_schedule_table(num_microbatches, num_model_chunks, microbatch_group_size)
+
+    default_group_count = max(1, (num_microbatches + microbatch_group_size - 1) // microbatch_group_size)
+    if default_group_count < 3:
+        return _front_loaded_schedule_table(
+            num_microbatches,
+            num_model_chunks,
+            microbatch_group_size,
+        )
+
+    head = max(1, min(microbatch_group_size, num_microbatches) // 2)
+    tail = max(1, min(head, num_microbatches - head))
+    middle_groups = max(1, default_group_count - 2)
+    middle_microbatches = num_microbatches - head - tail
+    if middle_microbatches < middle_groups:
+        return _front_loaded_schedule_table(
+            num_microbatches,
+            num_model_chunks,
+            microbatch_group_size,
+        )
+
+    base = middle_microbatches // middle_groups
+    rem = middle_microbatches % middle_groups
+    group_sizes = [head]
+    group_sizes.extend(base + (1 if idx < rem else 0) for idx in range(middle_groups))
+    group_sizes.append(tail)
+    return _grouped_schedule_table(num_microbatches, num_model_chunks, group_sizes)
+
+
 def build_strategy_schedule_table(
     policy: str,
     constraints: StrategyConstraints,
@@ -574,6 +762,17 @@ def build_strategy_schedule_table(
             constraints.microbatch_group_size,
         )
         candidate = StrategyCandidate("front-loaded", tuple(table), ("shrink_initial_group",))
+    elif policy in {"seam-staggered", "seam_staggered", "seam-stagger"}:
+        table = _seam_staggered_schedule_table(
+            constraints.num_microbatches,
+            constraints.num_model_chunks,
+            constraints.microbatch_group_size,
+        )
+        candidate = StrategyCandidate(
+            "seam-staggered",
+            tuple(table),
+            ("shrink_boundary_groups", "expand_steady_state_groups"),
+        )
     else:
         raise ValueError(f"unknown pipeline strategy synthesis policy: {policy}")
 
