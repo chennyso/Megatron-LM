@@ -5,7 +5,7 @@ This directory contains the reproducible launcher assets for the dual-node
 
 ## Workflow
 
-1. Push the current Megatron branch to GitHub.
+1. Sync the current Megatron workspace into the shared PVC code directory.
 2. Launch a short profile run on BBT with trace collection enabled.
 3. Run the offline search loop on the collected traces to emit a verified
    `StrategyPlan`.
@@ -17,8 +17,8 @@ This directory contains the reproducible launcher assets for the dual-node
 - Nodes: `g5` and `g6`
 - Workspace PVC: `chenny-workspace` mounted at `/workspace`
 - Model PVC: `chenny-models-nfs` mounted at `/models`
-- Repo clone path inside pods: `/workspace/repos/Megatron-LM`
-- Git remote: `https://github.com/chennyso/Megatron-LM.git`
+- Repo path inside pods: `/workspace/code/Megatron-LM-codex-agentpipe`
+- The code is synced from the local workspace before each experiment launch.
 
 ## Files
 

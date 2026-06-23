@@ -55,12 +55,10 @@ spec:
         - name: worker
           image: nvcr.io/nvidia/pytorch:26.04-py3
           imagePullPolicy: IfNotPresent
-          workingDir: /workspace/repos/Megatron-LM
+          workingDir: /workspace/code/Megatron-LM-codex-agentpipe
           env:
-          - name: GIT_REPO
-            value: https://github.com/chennyso/Megatron-LM.git
-          - name: GIT_BRANCH
-            value: codex/agentpipe-vp-search
+          - name: CODE_DIR
+            value: /workspace/code/Megatron-LM-codex-agentpipe
           - name: SERVICE_NAME
             value: seampipe-megatron-svc
           - name: WORLD_SIZE
@@ -116,14 +114,9 @@ spec:
           args:
           - |
             set -euo pipefail
-            mkdir -p /workspace/repos /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
-            if [ ! -d /workspace/repos/Megatron-LM/.git ]; then
-              git clone "$GIT_REPO" /workspace/repos/Megatron-LM
-            fi
-            cd /workspace/repos/Megatron-LM
-            git fetch origin
-            git checkout "$GIT_BRANCH"
-            git reset --hard "origin/$GIT_BRANCH"
+            mkdir -p /workspace/code /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
+            [ -d "$CODE_DIR" ] || { echo "missing CODE_DIR=$CODE_DIR"; exit 1; }
+            cd "$CODE_DIR"
 
             PEERS=""
             waited=0
