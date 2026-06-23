@@ -81,8 +81,8 @@ spec:
             value: profile
           - name: MEGATRON_ARGS
             value: >-
-              --tensor-model-parallel-size 1
-              --pipeline-model-parallel-size 8
+              --tensor-model-parallel-size 4
+              --pipeline-model-parallel-size 4
               --num-layers 36
               --hidden-size 4096
               --ffn-hidden-size 12288
@@ -107,7 +107,7 @@ spec:
               --untie-embeddings-and-output-weights
               --mock-data
               --train-iters 20
-              --num-layers-per-virtual-pipeline-stage 2
+              --num-layers-per-virtual-pipeline-stage 3
               --pipeline-strategy-policy default
               --pipeline-strategy-runtime fixed
               --pipeline-strategy-profile-steps 8
