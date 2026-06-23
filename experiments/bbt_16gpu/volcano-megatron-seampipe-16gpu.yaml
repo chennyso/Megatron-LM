@@ -119,12 +119,9 @@ spec:
             mkdir -p /workspace/repos /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
             exec > >(tee -a "/workspace/runs/seampipe/qwen3-8b/final/launcher.$(hostname).log") 2>&1
             export GIT_SSL_NO_VERIFY=1
-            python3 - <<'PY'
-            import importlib, subprocess, sys
-            missing = [pkg for pkg in ("transformers", "sentencepiece") if importlib.util.find_spec(pkg) is None]
-            if missing:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *missing])
-            PY
+            if ! python3 -c 'import transformers, sentencepiece' >/dev/null 2>&1; then
+              python3 -m pip install -q transformers sentencepiece
+            fi
             REPO_DIR="/workspace/repos/Megatron-LM-$(hostname)"
             if [ ! -d "$REPO_DIR/.git" ]; then
               rm -rf "$REPO_DIR"
