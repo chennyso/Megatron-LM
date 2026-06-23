@@ -55,7 +55,7 @@ spec:
         - name: worker
           image: nvcr.io/nvidia/pytorch:26.04-py3
           imagePullPolicy: IfNotPresent
-          workingDir: /workspace/repos/Megatron-LM
+          workingDir: /workspace
           env:
           - name: GIT_REPO
             value: https://github.com/chennyso/Megatron-LM.git
@@ -119,10 +119,12 @@ spec:
             mkdir -p /workspace/repos /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
             exec > >(tee -a "/workspace/runs/seampipe/qwen3-8b/final/launcher.$(hostname).log") 2>&1
             export GIT_SSL_NO_VERIFY=1
-            if [ ! -d /workspace/repos/Megatron-LM/.git ]; then
-              git clone "$GIT_REPO" /workspace/repos/Megatron-LM
+            REPO_DIR="/workspace/repos/Megatron-LM-$(hostname)"
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              rm -rf "$REPO_DIR"
+              git clone "$GIT_REPO" "$REPO_DIR"
             fi
-            cd /workspace/repos/Megatron-LM
+            cd "$REPO_DIR"
             git fetch origin
             git checkout "$GIT_BRANCH"
             git reset --hard "origin/$GIT_BRANCH"
