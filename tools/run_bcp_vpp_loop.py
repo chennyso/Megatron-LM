@@ -31,6 +31,10 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def _add_common_shape_args(cmd: List[str], args: argparse.Namespace) -> None:
     cmd.extend(
         [
@@ -160,7 +164,23 @@ def main() -> None:
     ]
     if args.nsys_sqlite:
         overlap_cmd.extend(["--nsys-sqlite", *args.nsys_sqlite])
-    _run(overlap_cmd, log_path=log_path)
+    overlap_status: dict[str, Any] = {"status": "ok"}
+    try:
+        _run(overlap_cmd, log_path=log_path)
+    except subprocess.CalledProcessError as exc:
+        overlap_status = {
+            "status": "unavailable",
+            "reason": "effective_overlap_failed",
+            "returncode": exc.returncode,
+            "cmd": overlap_cmd,
+        }
+        _write_json(
+            overlap_path,
+            {
+                "summary": {},
+                "status": overlap_status,
+            },
+        )
 
     best = _load_json(best_path)
     report = _load_json(report_path)
@@ -205,8 +225,9 @@ def main() -> None:
             "rewrite_algebra": report.get("rewrite_algebra", {}),
         },
         "overlap_summary": overlap.get("summary", {}),
+        "overlap_status": overlap_status if overlap_status["status"] != "ok" else overlap.get("status", overlap_status),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _write_json(manifest_path, manifest)
     print(json.dumps({"manifest": str(manifest_path), "best_strategy": str(best_path)}, indent=2))
 
 

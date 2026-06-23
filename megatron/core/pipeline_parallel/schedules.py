@@ -1246,14 +1246,21 @@ def forward_backward_pipelining_with_interleaving(
         config, "pipeline_strategy_memory_budget_mb", None
     )
     strategy_trace_path = getattr(config, "pipeline_strategy_trace_path", None)
+    tp_rank = parallel_state.get_tensor_model_parallel_rank()
+    dp_rank = parallel_state.get_data_parallel_rank()
     if strategy_trace_path:
         global_rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
         strategy_trace_path = strategy_trace_path.format(
             rank=global_rank,
             pp_rank=pipeline_parallel_rank,
-            tp_rank=parallel_state.get_tensor_model_parallel_rank(),
-            dp_rank=parallel_state.get_data_parallel_rank(),
+            tp_rank=tp_rank,
+            dp_rank=dp_rank,
         )
+        # Only one replica should emit PP/VPP traces. Otherwise data-parallel
+        # copies race on the same shared path (often keyed by pp_rank only) and
+        # corrupt the JSON artifact.
+        if tp_rank != 0 or dp_rank != 0:
+            strategy_trace_path = None
     strategy_trace = StrategyTrace(
         enabled=bool(strategy_trace_path),
         pp_rank=pipeline_parallel_rank,
