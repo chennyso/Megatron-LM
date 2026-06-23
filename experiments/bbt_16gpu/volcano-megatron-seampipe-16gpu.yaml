@@ -55,10 +55,12 @@ spec:
         - name: worker
           image: nvcr.io/nvidia/pytorch:26.04-py3
           imagePullPolicy: IfNotPresent
-          workingDir: /workspace/code/Megatron-LM-codex-agentpipe
+          workingDir: /workspace/repos/Megatron-LM
           env:
-          - name: CODE_DIR
-            value: /workspace/code/Megatron-LM-codex-agentpipe
+          - name: GIT_REPO
+            value: git@github-443:chennyso/Megatron-LM.git
+          - name: GIT_BRANCH
+            value: codex/agentpipe-vp-search
           - name: SERVICE_NAME
             value: seampipe-megatron-svc
           - name: WORLD_SIZE
@@ -114,9 +116,15 @@ spec:
           args:
           - |
             set -euo pipefail
-            mkdir -p /workspace/code /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
-            [ -d "$CODE_DIR" ] || { echo "missing CODE_DIR=$CODE_DIR"; exit 1; }
-            cd "$CODE_DIR"
+            mkdir -p /workspace/repos /workspace/runs/seampipe/qwen3-8b/final/traces /workspace/runs/seampipe/qwen3-8b/plans
+            export GIT_SSH_COMMAND="ssh -F /root/.ssh/config"
+            if [ ! -d /workspace/repos/Megatron-LM/.git ]; then
+              git clone "$GIT_REPO" /workspace/repos/Megatron-LM
+            fi
+            cd /workspace/repos/Megatron-LM
+            git fetch origin
+            git checkout "$GIT_BRANCH"
+            git reset --hard "origin/$GIT_BRANCH"
 
             PEERS=""
             waited=0
@@ -198,6 +206,9 @@ spec:
             mountPath: /workspace
           - name: model-cache
             mountPath: /models
+          - name: ssh-config
+            mountPath: /root/.ssh
+            readOnly: true
         volumes:
         - name: workspace
           persistentVolumeClaim:
@@ -205,3 +216,7 @@ spec:
         - name: model-cache
           persistentVolumeClaim:
             claimName: chenny-models-nfs
+        - name: ssh-config
+          secret:
+            secretName: github-ssh-key
+            defaultMode: 0400
