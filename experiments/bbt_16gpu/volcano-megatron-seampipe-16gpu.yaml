@@ -196,10 +196,12 @@ spec:
               cpu: "48"
               memory: "220Gi"
               nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
             limits:
               cpu: "96"
               memory: "320Gi"
               nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
           volumeMounts:
           - name: workspace
             mountPath: /workspace
