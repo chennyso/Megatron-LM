@@ -285,11 +285,13 @@ def build_final_manifest(
     branch: str,
     trial_tag: str,
     plan_path: str,
+    final_dirname: str,
+    job_suffix: str,
     workspace_claim: str,
     model_claim: str,
     hf_model_ckpt: str,
 ) -> tuple[Path, str, str, str]:
-    job_name = f"spm-{trial_tag}-final"
+    job_name = f"spm-{trial_tag}-{job_suffix}"
     service_name = f"{job_name}-svc"
     app_label = job_name
     manifest = render_manifest(
@@ -298,7 +300,7 @@ def build_final_manifest(
             "seampipe-megatron-final-svc": service_name,
             "seampipe-megatron-16gpu-final": job_name,
             "seampipe-megatron-final": app_label,
-            "/workspace/runs/seampipe/qwen3-8b/final-plan": f"{run_root}/final-fixed",
+            "/workspace/runs/seampipe/qwen3-8b/final-plan": f"{run_root}/{final_dirname}",
             "/workspace/runs/seampipe/qwen3-8b/plans/best-plan.json": plan_path,
             "claimName: chenny-workspace": f"claimName: {workspace_claim}",
             "claimName: chenny-models-nfs": f"claimName: {model_claim}",
@@ -398,6 +400,8 @@ def main() -> None:
             args.branch,
             f"{idx:02d}-f",
             final_plan_path,
+            "final-fixed",
+            "final",
             args.workspace_claim,
             args.model_claim,
             args.hf_model_ckpt,
@@ -417,6 +421,35 @@ def main() -> None:
             "pods": final_result.pods,
             "phases": final_result.phases,
             "metrics": final_result.metrics,
+        }
+
+        final_bcp_ready_plan_path = f"{run_root}/search-bcp-ready/best_strategy.json"
+        final_bcp_ready_manifest, final_bcp_ready_app, final_bcp_ready_job, final_bcp_ready_svc = build_final_manifest(
+            run_root,
+            args.branch,
+            f"{idx:02d}-r",
+            final_bcp_ready_plan_path,
+            "final-bcp-ready",
+            "ready",
+            args.workspace_claim,
+            args.model_claim,
+            args.hf_model_ckpt,
+        )
+        final_bcp_ready_result = submit_and_wait(
+            final_bcp_ready_manifest,
+            final_bcp_ready_app,
+            final_bcp_ready_job,
+            final_bcp_ready_svc,
+            args.inspect_pod,
+            f"{run_root}/final-bcp-ready",
+            local_trial_dir / "final-bcp-ready-logs",
+            timeout_s,
+        )
+        trial_summary["final_bcp_ready"] = {
+            "job_name": final_bcp_ready_result.job_name,
+            "pods": final_bcp_ready_result.pods,
+            "phases": final_bcp_ready_result.phases,
+            "metrics": final_bcp_ready_result.metrics,
         }
         write_json(local_trial_dir / "trial-summary.json", trial_summary)
         batch_summary["trials"].append(trial_summary)
