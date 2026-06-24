@@ -39,6 +39,74 @@ KUBECTL_ENV_PREFIX = [
 ]
 
 
+@dataclass(frozen=True)
+class ModelSpec:
+    key: str
+    run_slug: str
+    hf_model_ckpt: str
+    num_layers: int
+    hidden_size: int
+    ffn_hidden_size: int
+    num_attention_heads: int
+    num_query_groups: int
+    default_vp: int
+    seq_length: int = 4096
+    max_position_embeddings: int = 40960
+    tensor_parallel_size: int = 4
+    pipeline_parallel_size: int = 4
+    micro_batch_size: int = 1
+    global_batch_size: int = 16
+
+
+MODEL_SPECS: dict[str, ModelSpec] = {
+    "qwen3-8B": ModelSpec(
+        key="qwen3-8B",
+        run_slug="qwen3-8b",
+        hf_model_ckpt="/models/qwen3-8B",
+        num_layers=36,
+        hidden_size=4096,
+        ffn_hidden_size=12288,
+        num_attention_heads=32,
+        num_query_groups=8,
+        default_vp=3,
+    ),
+    "qwen3-14B": ModelSpec(
+        key="qwen3-14B",
+        run_slug="qwen3-14b",
+        hf_model_ckpt="/models/qwen3-14B",
+        num_layers=40,
+        hidden_size=5120,
+        ffn_hidden_size=17408,
+        num_attention_heads=40,
+        num_query_groups=8,
+        default_vp=5,
+    ),
+    "qwen3-32B": ModelSpec(
+        key="qwen3-32B",
+        run_slug="qwen3-32b",
+        hf_model_ckpt="/models/qwen3-32B",
+        num_layers=64,
+        hidden_size=5120,
+        ffn_hidden_size=25600,
+        num_attention_heads=64,
+        num_query_groups=8,
+        default_vp=4,
+    ),
+}
+
+PROFILE_STRATEGY_BLOCK = """--num-layers-per-virtual-pipeline-stage 3
+              --pipeline-strategy-policy default
+              --pipeline-strategy-runtime fixed
+              --pipeline-strategy-profile-steps 8
+              --pipeline-strategy-trace-path /workspace/runs/seampipe/qwen3-8b/final/traces/rank{pp_rank}.json"""
+
+FINAL_STRATEGY_BLOCK = """--num-layers-per-virtual-pipeline-stage 3
+              --pipeline-strategy-policy default
+              --pipeline-strategy-runtime fixed
+              --pipeline-strategy-profile-steps 8
+              --pipeline-strategy-trace-path /workspace/runs/seampipe/qwen3-8b/final-plan/traces/rank{pp_rank}.json"""
+
+
 @dataclass
 class JobResult:
     job_name: str
@@ -80,6 +148,24 @@ def replace_all(text: str, mapping: dict[str, str]) -> str:
     return text
 
 
+def build_strategy_block(
+    *,
+    layers_per_virtual_stage: int | None,
+    trace_dir: str | None,
+) -> str:
+    if layers_per_virtual_stage is None:
+        return ""
+    block = [
+        f"--num-layers-per-virtual-pipeline-stage {layers_per_virtual_stage}",
+        "--pipeline-strategy-policy default",
+        "--pipeline-strategy-runtime fixed",
+        "--pipeline-strategy-profile-steps 8",
+    ]
+    if trace_dir is not None:
+        block.append(f"--pipeline-strategy-trace-path {trace_dir}/rank{{pp_rank}}.json")
+    return "\n              ".join(block)
+
+
 def render_manifest(template_path: Path, replacements: dict[str, str]) -> Path:
     rendered = replace_all(template_path.read_text(encoding="utf-8"), replacements)
     handle = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
@@ -89,6 +175,40 @@ def render_manifest(template_path: Path, replacements: dict[str, str]) -> Path:
         return Path(handle.name)
     finally:
         handle.close()
+
+
+def template_replacements(
+    *,
+    model_spec: ModelSpec,
+    workspace_claim: str,
+    model_claim: str,
+    hf_model_ckpt: str,
+    run_root_from: str,
+    run_root_to: str,
+    strategy_block_from: str,
+    strategy_block_to: str,
+    branch: str,
+) -> dict[str, str]:
+    return {
+        run_root_from: run_root_to,
+        "claimName: chenny-workspace": f"claimName: {workspace_claim}",
+        "claimName: chenny-models-nfs": f"claimName: {model_claim}",
+        "/workspace/models/qwen3-8B": hf_model_ckpt,
+        "value: codex/agentpipe-vp-search": f"value: {branch}",
+        "--num-layers 36": f"--num-layers {model_spec.num_layers}",
+        "--hidden-size 4096": f"--hidden-size {model_spec.hidden_size}",
+        "--ffn-hidden-size 12288": f"--ffn-hidden-size {model_spec.ffn_hidden_size}",
+        "--num-attention-heads 32": f"--num-attention-heads {model_spec.num_attention_heads}",
+        "--num-query-groups 8": f"--num-query-groups {model_spec.num_query_groups}",
+        "--tensor-model-parallel-size 4": f"--tensor-model-parallel-size {model_spec.tensor_parallel_size}",
+        "--pipeline-model-parallel-size 4": f"--pipeline-model-parallel-size {model_spec.pipeline_parallel_size}",
+        "--micro-batch-size 1": f"--micro-batch-size {model_spec.micro_batch_size}",
+        "--global-batch-size 16": f"--global-batch-size {model_spec.global_batch_size}",
+        "--seq-length 4096": f"--seq-length {model_spec.seq_length}",
+        "--max-position-embeddings 40960": f"--max-position-embeddings {model_spec.max_position_embeddings}",
+        "--tokenizer-model /workspace/models/qwen3-8B": f"--tokenizer-model {hf_model_ckpt}",
+        strategy_block_from: strategy_block_to,
+    }
 
 
 def pod_names_for_label(app_label: str) -> list[str]:
@@ -205,7 +325,14 @@ printf '%s' "{repo_dir}"
     return result.stdout.strip().splitlines()[-1]
 
 
-def run_search(pod_name: str, branch: str, trace_glob: str, output_dir: str, runtime: str) -> dict[str, Any]:
+def run_search(
+    pod_name: str,
+    branch: str,
+    trace_glob: str,
+    output_dir: str,
+    runtime: str,
+    model_spec: ModelSpec,
+) -> dict[str, Any]:
     repo_dir = ensure_inspect_repo(pod_name, branch)
     cmd = f"""
 set -euo pipefail
@@ -214,10 +341,10 @@ python3 tools/run_bcp_vpp_loop.py \
   --trace {trace_glob} \
   --output-dir {output_dir} \
   --num-microbatches 16 \
-  --num-model-chunks 3 \
+  --num-model-chunks {model_spec.default_vp} \
   --microbatch-group-size 4 \
-  --pipeline-parallel-size 4 \
-  --num-layers 36 \
+  --pipeline-parallel-size {model_spec.pipeline_parallel_size} \
+  --num-layers {model_spec.num_layers} \
   --runtime {runtime} \
   --objective bcp \
   --candidate-budget 24 \
@@ -256,6 +383,9 @@ def build_profile_manifest(
     run_root: str,
     branch: str,
     trial_tag: str,
+    model_spec: ModelSpec,
+    profile_dirname: str,
+    enable_strategy_profile: bool,
     workspace_claim: str,
     model_claim: str,
     hf_model_ckpt: str,
@@ -263,18 +393,33 @@ def build_profile_manifest(
     job_name = f"spm-{trial_tag}-prof"
     service_name = f"{job_name}-svc"
     app_label = job_name
+    layers_per_virtual_stage = None
+    if enable_strategy_profile:
+        layers_per_virtual_stage = model_spec.num_layers // (
+            model_spec.pipeline_parallel_size * model_spec.default_vp
+        )
+    strategy_block = build_strategy_block(
+        layers_per_virtual_stage=layers_per_virtual_stage,
+        trace_dir=f"{run_root}/{profile_dirname}/traces" if enable_strategy_profile else None,
+    )
     manifest = render_manifest(
         PROFILE_TEMPLATE,
         {
             "seampipe-megatron-svc": service_name,
             "seampipe-megatron-16gpu": job_name,
             "seampipe-megatron": app_label,
-            "/workspace/runs/seampipe/qwen3-8b/final": f"{run_root}/profile",
             "/workspace/runs/seampipe/qwen3-8b/plans/best-plan.json": f"{run_root}/plans/profile-placeholder.json",
-            "claimName: chenny-workspace": f"claimName: {workspace_claim}",
-            "claimName: chenny-models-nfs": f"claimName: {model_claim}",
-            "/workspace/models/qwen3-8B": hf_model_ckpt,
-            "value: codex/agentpipe-vp-search": f"value: {branch}",
+            **template_replacements(
+                model_spec=model_spec,
+                workspace_claim=workspace_claim,
+                model_claim=model_claim,
+                hf_model_ckpt=hf_model_ckpt,
+                run_root_from="/workspace/runs/seampipe/qwen3-8b/final",
+                run_root_to=f"{run_root}/{profile_dirname}",
+                strategy_block_from=PROFILE_STRATEGY_BLOCK,
+                strategy_block_to=strategy_block,
+                branch=branch,
+            ),
         },
     )
     return manifest, app_label, job_name, service_name
@@ -287,6 +432,7 @@ def build_final_manifest(
     plan_path: str,
     final_dirname: str,
     job_suffix: str,
+    model_spec: ModelSpec,
     workspace_claim: str,
     model_claim: str,
     hf_model_ckpt: str,
@@ -300,12 +446,21 @@ def build_final_manifest(
             "seampipe-megatron-final-svc": service_name,
             "seampipe-megatron-16gpu-final": job_name,
             "seampipe-megatron-final": app_label,
-            "/workspace/runs/seampipe/qwen3-8b/final-plan": f"{run_root}/{final_dirname}",
             "/workspace/runs/seampipe/qwen3-8b/plans/best-plan.json": plan_path,
-            "claimName: chenny-workspace": f"claimName: {workspace_claim}",
-            "claimName: chenny-models-nfs": f"claimName: {model_claim}",
-            "/workspace/models/qwen3-8B": hf_model_ckpt,
-            "value: codex/agentpipe-vp-search": f"value: {branch}",
+            **template_replacements(
+                model_spec=model_spec,
+                workspace_claim=workspace_claim,
+                model_claim=model_claim,
+                hf_model_ckpt=hf_model_ckpt,
+                run_root_from="/workspace/runs/seampipe/qwen3-8b/final-plan",
+                run_root_to=f"{run_root}/{final_dirname}",
+                strategy_block_from=FINAL_STRATEGY_BLOCK,
+                strategy_block_to=FINAL_STRATEGY_BLOCK.replace(
+                    "/workspace/runs/seampipe/qwen3-8b/final-plan",
+                    f"{run_root}/{final_dirname}",
+                ),
+                branch=branch,
+            ),
         },
     )
     return manifest, app_label, job_name, service_name
@@ -318,10 +473,14 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--timeout-minutes", type=int, default=45)
     parser.add_argument("--prefix", default="paper-qwen3-8b")
+    parser.add_argument("--model-key", default="qwen3-8B", choices=sorted(MODEL_SPECS))
     parser.add_argument("--workspace-claim", default="chenny-workspace")
     parser.add_argument("--model-claim", default="chenny-models-nfs")
-    parser.add_argument("--hf-model-ckpt", default="/workspace/models/qwen3-8B")
+    parser.add_argument("--hf-model-ckpt", default=None)
+    parser.add_argument("--run-1f1b-baseline", action="store_true")
     args = parser.parse_args()
+    model_spec = MODEL_SPECS[args.model_key]
+    hf_model_ckpt = args.hf_model_ckpt or model_spec.hf_model_ckpt
 
     RESULTS_ROOT.mkdir(parents=True, exist_ok=True)
     batch_tag = f"{args.prefix}-{now_tag()}"
@@ -332,6 +491,8 @@ def main() -> None:
     batch_summary: dict[str, Any] = {
         "batch_tag": batch_tag,
         "branch": args.branch,
+        "model_key": model_spec.key,
+        "hf_model_ckpt": hf_model_ckpt,
         "inspect_pod": args.inspect_pod,
         "repeats": args.repeats,
         "trials": [],
@@ -341,7 +502,7 @@ def main() -> None:
         trial_tag = f"{batch_tag}-r{idx:02d}"
         local_trial_dir = batch_root / f"r{idx:02d}"
         local_trial_dir.mkdir(parents=True, exist_ok=True)
-        run_root = f"/workspace/runs/seampipe/paper/qwen3-8b/{trial_tag}"
+        run_root = f"/workspace/runs/seampipe/paper/{model_spec.run_slug}/{trial_tag}"
 
         trial_summary: dict[str, Any] = {
             "trial_tag": trial_tag,
@@ -352,9 +513,12 @@ def main() -> None:
             run_root,
             args.branch,
             f"{idx:02d}-p",
+            model_spec,
+            "profile",
+            True,
             args.workspace_claim,
             args.model_claim,
-            args.hf_model_ckpt,
+            hf_model_ckpt,
         )
         profile_result = submit_and_wait(
             profile_manifest,
@@ -377,12 +541,42 @@ def main() -> None:
             batch_summary["trials"].append(trial_summary)
             continue
 
+        if args.run_1f1b_baseline:
+            onef1b_manifest, onef1b_app, onef1b_job, onef1b_svc = build_profile_manifest(
+                run_root,
+                args.branch,
+                f"{idx:02d}-b",
+                model_spec,
+                "baseline-1f1b",
+                False,
+                args.workspace_claim,
+                args.model_claim,
+                hf_model_ckpt,
+            )
+            onef1b_result = submit_and_wait(
+                onef1b_manifest,
+                onef1b_app,
+                onef1b_job,
+                onef1b_svc,
+                args.inspect_pod,
+                f"{run_root}/baseline-1f1b",
+                local_trial_dir / "baseline-1f1b-logs",
+                timeout_s,
+            )
+            trial_summary["baseline_1f1b"] = {
+                "job_name": onef1b_result.job_name,
+                "pods": onef1b_result.pods,
+                "phases": onef1b_result.phases,
+                "metrics": onef1b_result.metrics,
+            }
+
         search_fixed = run_search(
             args.inspect_pod,
             args.branch,
             f"{run_root}/profile/traces/rank*.json",
             f"{run_root}/search-fixed",
             "fixed",
+            model_spec,
         )
         search_bcp_ready = run_search(
             args.inspect_pod,
@@ -390,6 +584,7 @@ def main() -> None:
             f"{run_root}/profile/traces/rank*.json",
             f"{run_root}/search-bcp-ready",
             "bcp-ready",
+            model_spec,
         )
         trial_summary["search_fixed"] = search_fixed
         trial_summary["search_bcp_ready"] = search_bcp_ready
@@ -402,9 +597,10 @@ def main() -> None:
             final_plan_path,
             "final-fixed",
             "final",
+            model_spec,
             args.workspace_claim,
             args.model_claim,
-            args.hf_model_ckpt,
+            hf_model_ckpt,
         )
         final_result = submit_and_wait(
             final_manifest,
@@ -431,9 +627,10 @@ def main() -> None:
             final_bcp_ready_plan_path,
             "final-bcp-ready",
             "ready",
+            model_spec,
             args.workspace_claim,
             args.model_claim,
-            args.hf_model_ckpt,
+            hf_model_ckpt,
         )
         final_bcp_ready_result = submit_and_wait(
             final_bcp_ready_manifest,
