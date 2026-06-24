@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -140,9 +141,9 @@ def now_tag() -> str:
 
 def short_job_token(text: str, limit: int = 16) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    if not cleaned:
-        return "run"
-    return cleaned[:limit].rstrip("-")
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+    base = cleaned[: max(limit - 7, 1)].rstrip("-") if cleaned else "run"
+    return f"{base}-{digest}"
 
 
 def current_branch() -> str:
