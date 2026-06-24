@@ -138,6 +138,13 @@ def now_tag() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
 
 
+def short_job_token(text: str, limit: int = 16) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    if not cleaned:
+        return "run"
+    return cleaned[:limit].rstrip("-")
+
+
 def current_branch() -> str:
     return run(["git", "-C", str(REPO_ROOT), "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
 
@@ -382,6 +389,7 @@ def submit_and_wait(
 def build_profile_manifest(
     run_root: str,
     branch: str,
+    batch_token: str,
     trial_tag: str,
     model_spec: ModelSpec,
     profile_dirname: str,
@@ -390,7 +398,7 @@ def build_profile_manifest(
     model_claim: str,
     hf_model_ckpt: str,
 ) -> tuple[Path, str, str, str]:
-    job_name = f"spm-{trial_tag}-prof"
+    job_name = f"spm-{batch_token}-{trial_tag}-prof"
     service_name = f"{job_name}-svc"
     app_label = job_name
     layers_per_virtual_stage = None
@@ -428,6 +436,7 @@ def build_profile_manifest(
 def build_final_manifest(
     run_root: str,
     branch: str,
+    batch_token: str,
     trial_tag: str,
     plan_path: str,
     final_dirname: str,
@@ -437,7 +446,7 @@ def build_final_manifest(
     model_claim: str,
     hf_model_ckpt: str,
 ) -> tuple[Path, str, str, str]:
-    job_name = f"spm-{trial_tag}-{job_suffix}"
+    job_name = f"spm-{batch_token}-{trial_tag}-{job_suffix}"
     service_name = f"{job_name}-svc"
     app_label = job_name
     manifest = render_manifest(
@@ -487,6 +496,7 @@ def main() -> None:
     batch_root = RESULTS_ROOT / batch_tag
     batch_root.mkdir(parents=True, exist_ok=True)
     timeout_s = args.timeout_minutes * 60
+    batch_token = short_job_token(batch_tag)
 
     batch_summary: dict[str, Any] = {
         "batch_tag": batch_tag,
@@ -512,6 +522,7 @@ def main() -> None:
         profile_manifest, profile_app, profile_job, profile_svc = build_profile_manifest(
             run_root,
             args.branch,
+            batch_token,
             f"{idx:02d}-p",
             model_spec,
             "profile",
@@ -545,6 +556,7 @@ def main() -> None:
             onef1b_manifest, onef1b_app, onef1b_job, onef1b_svc = build_profile_manifest(
                 run_root,
                 args.branch,
+                batch_token,
                 f"{idx:02d}-b",
                 model_spec,
                 "baseline-1f1b",
@@ -593,6 +605,7 @@ def main() -> None:
         final_manifest, final_app, final_job, final_svc = build_final_manifest(
             run_root,
             args.branch,
+            batch_token,
             f"{idx:02d}-f",
             final_plan_path,
             "final-fixed",
@@ -623,6 +636,7 @@ def main() -> None:
         final_bcp_ready_manifest, final_bcp_ready_app, final_bcp_ready_job, final_bcp_ready_svc = build_final_manifest(
             run_root,
             args.branch,
+            batch_token,
             f"{idx:02d}-r",
             final_bcp_ready_plan_path,
             "final-bcp-ready",
