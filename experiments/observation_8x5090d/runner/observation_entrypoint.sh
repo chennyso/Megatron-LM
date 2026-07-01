@@ -24,19 +24,19 @@ cd "${REPO_DIR}"
 
 source "${REPO_DIR}/experiments/observation_8x5090d/runner/activate_observation_env.sh"
 
-python3 --version
+"${OBS_PYTHON}" --version
 nvidia-smi || true
 
 MATRIX_PATH="experiments/observation_8x5090d/configs/observation_matrix.json"
 
 if [ "${PHASE}" = "hardware" ]; then
-  python3 experiments/observation_8x5090d/scripts/run_hardware_profile.py \
+  "${OBS_PYTHON}" experiments/observation_8x5090d/scripts/run_hardware_profile.py \
     --matrix-path "${MATRIX_PATH}" \
     --output-dir "${RESULT_ROOT}/hardware"
   exit 0
 fi
 
-python3 experiments/observation_8x5090d/scripts/run_megatron_observation.py \
+"${OBS_PYTHON}" experiments/observation_8x5090d/scripts/run_megatron_observation.py \
   --matrix-path "${MATRIX_PATH}" \
   --phase "${PHASE}" \
   --output-dir "${RESULT_ROOT}/${PHASE}" \

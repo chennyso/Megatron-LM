@@ -14,6 +14,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SUMMARY_SCRIPT = REPO_ROOT / "experiments" / "observation_8x5090d" / "scripts" / "summarize_megatron_run.py"
+OBS_VENV_DIR = Path(os.environ.get("OBS_VENV_DIR", "/workspace/venvs/observation-8x5090d"))
+OBS_PYTHON = os.environ.get("OBS_PYTHON") or str(OBS_VENV_DIR / "bin" / "python")
 
 
 def load_matrix(path: Path) -> dict:
@@ -179,6 +181,7 @@ def snapshot_environment(repeat_dir: Path) -> dict:
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "cwd": str(REPO_ROOT),
         "python": subprocess.run(["python3", "--version"], capture_output=True, text=True, check=False).stdout.strip(),
+        "obs_python": subprocess.run([OBS_PYTHON, "--version"], capture_output=True, text=True, check=False).stdout.strip(),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "nccl_env": {key: value for key, value in os.environ.items() if key.startswith("NCCL_") or key.startswith("TORCH_NCCL_")},
         "selected_env": {
@@ -243,7 +246,9 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
         snapshot_environment(repeat_dir)
 
         cmd = [
-            "torchrun",
+            OBS_PYTHON,
+            "-m",
+            "torch.distributed.run",
             "--nproc_per_node",
             "8",
             "--nnodes",
@@ -381,7 +386,7 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
 
         subprocess.run(
             [
-                "python3",
+                OBS_PYTHON,
                 str(SUMMARY_SCRIPT),
                 "--case-id",
                 case["id"],
