@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import requests
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PREPROCESS_SCRIPT = REPO_ROOT / "tools" / "preprocess_data.py"
@@ -13,6 +15,70 @@ PREPROCESS_SCRIPT = REPO_ROOT / "tools" / "preprocess_data.py"
 
 def load_matrix(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_fineweb_docs_via_mirror(dataset_cfg: dict, limit_docs: int, output_root: Path) -> tuple[int, dict]:
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise SystemExit("The `pyarrow` package is required for mirror-backed parquet dataset preparation.") from exc
+
+    endpoint = dataset_cfg.get("hf_endpoint", "https://hf-mirror.com").rstrip("/")
+    dataset_id = dataset_cfg["hf_dataset"]
+    revision = dataset_cfg.get("revision", "main")
+    path_prefix = dataset_cfg.get("hf_path_prefix", "data/")
+    metadata_url = f"{endpoint}/api/datasets/{dataset_id}"
+    metadata = requests.get(metadata_url, timeout=60).json()
+    resolved_revision = metadata.get("sha", revision)
+    siblings = metadata.get("siblings", [])
+    parquet_paths = sorted(
+        sibling["rfilename"]
+        for sibling in siblings
+        if sibling.get("rfilename", "").endswith(".parquet") and sibling["rfilename"].startswith(path_prefix)
+    )
+    if not parquet_paths:
+        raise SystemExit(f"No parquet files found for {dataset_id} with prefix {path_prefix!r}.")
+
+    download_dir = output_root / "downloads"
+    download_dir.mkdir(parents=True, exist_ok=True)
+    raw_jsonl = output_root / "raw.jsonl"
+    written_docs = 0
+    source_files: list[str] = []
+
+    with raw_jsonl.open("w", encoding="utf-8") as handle:
+        for parquet_path in parquet_paths:
+            local_name = parquet_path.replace("/", "__")
+            local_path = download_dir / local_name
+            resolve_url = f"{endpoint}/datasets/{dataset_id}/resolve/{resolved_revision}/{parquet_path}"
+            if not local_path.exists():
+                with requests.get(resolve_url, stream=True, timeout=600, allow_redirects=True) as response:
+                    response.raise_for_status()
+                    with local_path.open("wb") as parquet_handle:
+                        for chunk in response.iter_content(chunk_size=16 * 1024 * 1024):
+                            if chunk:
+                                parquet_handle.write(chunk)
+            source_files.append(parquet_path)
+            parquet_file = pq.ParquetFile(local_path)
+            for batch in parquet_file.iter_batches(columns=["text"], batch_size=1024):
+                texts = batch.column("text").to_pylist()
+                for text in texts:
+                    handle.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+                    written_docs += 1
+                    if written_docs >= limit_docs:
+                        return written_docs, {
+                            "hf_dataset": dataset_id,
+                            "hf_endpoint": endpoint,
+                            "resolved_revision": resolved_revision,
+                            "path_prefix": path_prefix,
+                            "source_files": source_files,
+                        }
+    return written_docs, {
+        "hf_dataset": dataset_id,
+        "hf_endpoint": endpoint,
+        "resolved_revision": resolved_revision,
+        "path_prefix": path_prefix,
+        "source_files": source_files,
+    }
 
 
 def main() -> int:
@@ -44,11 +110,16 @@ def main() -> int:
     if raw_jsonl.exists() and not args.overwrite:
         raise SystemExit(f"{raw_jsonl} already exists. Pass --overwrite to rebuild.")
 
-    ds = load_dataset(dataset_cfg["hf_dataset"], revision=dataset_cfg.get("revision"), split="train")
-    selected = ds.select(range(min(limit_docs, len(ds))))
-    with raw_jsonl.open("w", encoding="utf-8") as handle:
-        for row in selected:
-            handle.write(json.dumps({"text": row["text"]}, ensure_ascii=False) + "\n")
+    manifest_extra: dict[str, object] = {}
+    if dataset_cfg.get("hf_transport") == "mirror_api":
+        selected_count, manifest_extra = load_fineweb_docs_via_mirror(dataset_cfg, limit_docs, output_root)
+    else:
+        ds = load_dataset(dataset_cfg["hf_dataset"], revision=dataset_cfg.get("revision"), split="train")
+        selected = ds.select(range(min(limit_docs, len(ds))))
+        with raw_jsonl.open("w", encoding="utf-8") as handle:
+            for row in selected:
+                handle.write(json.dumps({"text": row["text"]}, ensure_ascii=False) + "\n")
+        selected_count = len(selected)
 
     tokenizer_model = dataset_cfg.get("tokenizer_model") or next(
         model.get("tokenizer_model")
@@ -79,11 +150,12 @@ def main() -> int:
         "dataset_spec_id": args.dataset_spec_id,
         "hf_dataset": dataset_cfg["hf_dataset"],
         "revision": dataset_cfg.get("revision"),
-        "document_count": len(selected),
+        "document_count": selected_count,
         "raw_jsonl": str(raw_jsonl),
         "output_prefix": str(output_prefix),
         "tokenizer_model": tokenizer_model,
     }
+    manifest.update(manifest_extra)
     (output_root / "dataset_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return 0
 
