@@ -4,7 +4,7 @@ import logging
 from typing import List, Optional
 
 try:
-    from transformers import AutoTokenizer
+    import transformers
 
     HAVE_TRANSFORMERS = True
 except ModuleNotFoundError:
@@ -67,20 +67,20 @@ class HuggingFaceTokenizer(MegatronTokenizerTextAbstract):
         try:
             # this logic deals with different huggingface tokenizers having different args
             if vocab_file is None:
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer = transformers.AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path=tokenizer_path,
                     use_fast=use_fast,
                     trust_remote_code=trust_remote_code,
                 )
             elif merges_file is None:
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer = transformers.AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path=tokenizer_path,
                     vocab_file=vocab_file,
                     use_fast=use_fast,
                     trust_remote_code=trust_remote_code,
                 )
             else:
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer = transformers.AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path=tokenizer_path,
                     vocab_file=vocab_file,
                     merge_files=merges_file,
