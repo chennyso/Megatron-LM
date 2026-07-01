@@ -4,10 +4,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
-from matplotlib import pyplot as plt
 
-from paper_plot_style import COLORS, save_fig
+from paper_plot_style import COLORS, panel_label, rotate_labels, save_fig
 
 
 def main() -> int:
@@ -17,20 +17,66 @@ def main() -> int:
 
     analysis_dir = Path(args.analysis_dir)
     fig_dir = analysis_dir / "figures"
+    df = pd.read_csv(analysis_dir / "figure_data" / "fig2_baselines.csv")
+    df = df.sort_values(["paper_model_id", "tokens_per_second_mean_mean"], ascending=[True, False]).reset_index(drop=True)
+    colors = [COLORS[hash(model_id) % len(COLORS)] for model_id in df["paper_model_id"]]
 
-    df = pd.read_csv(analysis_dir / "case_summaries.csv")
-    baseline = df[~df["case_id"].str.contains("nsys|rewrite", regex=True)]
+    fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.2))
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].bar(baseline["case_id"], baseline["tokens_per_second_mean"], color=COLORS[0])
-    axes[0].set_title("Tokens/s Across Baselines")
-    axes[0].set_ylabel("Tokens/s")
-    axes[0].tick_params(axis="x", rotation=75)
+    ax = axes[0, 0]
+    ax.bar(df["paper_label"], df["tokens_per_second_mean_mean"], color=colors)
+    ax.errorbar(
+        df["paper_label"],
+        df["tokens_per_second_mean_mean"],
+        yerr=df["tokens_per_second_mean_ci95_halfwidth"].fillna(0),
+        fmt="none",
+        ecolor="black",
+        elinewidth=0.9,
+        capsize=2,
+    )
+    ax.set_ylabel("Tokens/s")
+    rotate_labels(ax, 35)
+    panel_label(ax, "(a)")
 
-    axes[1].bar(baseline["case_id"], baseline["iter_time_mean_ms"], color=COLORS[1])
-    axes[1].set_title("Step Time Mean")
-    axes[1].set_ylabel("ms")
-    axes[1].tick_params(axis="x", rotation=75)
+    ax = axes[0, 1]
+    ax.bar(df["paper_label"], df["iter_time_ms_mean_mean"], color=colors)
+    ax.errorbar(
+        df["paper_label"],
+        df["iter_time_ms_mean_mean"],
+        yerr=df["iter_time_ms_mean_ci95_halfwidth"].fillna(0),
+        fmt="none",
+        ecolor="black",
+        elinewidth=0.9,
+        capsize=2,
+    )
+    ax.set_ylabel("Step time (ms)")
+    rotate_labels(ax, 35)
+    panel_label(ax, "(b)")
+
+    ax = axes[1, 0]
+    ax.bar(df["paper_label"], df["peak_reserved_mb_mean_mean"] / 1024.0, color=colors)
+    ax.errorbar(
+        df["paper_label"],
+        df["peak_reserved_mb_mean_mean"] / 1024.0,
+        yerr=df["peak_reserved_mb_mean_ci95_halfwidth"].fillna(0) / 1024.0,
+        fmt="none",
+        ecolor="black",
+        elinewidth=0.9,
+        capsize=2,
+    )
+    ax.set_ylabel("Peak reserved memory (GiB)")
+    rotate_labels(ax, 35)
+    panel_label(ax, "(c)")
+
+    ax = axes[1, 1]
+    status = (~df["oom_or_runtime_error_any"]).astype(int)
+    ax.bar(df["paper_label"], status, color=colors)
+    ax.set_ylim(0, 1.15)
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["error", "ok"])
+    ax.set_ylabel("Feasibility")
+    rotate_labels(ax, 35)
+    panel_label(ax, "(d)")
 
     save_fig(fig, fig_dir, "fig2_baselines")
     return 0

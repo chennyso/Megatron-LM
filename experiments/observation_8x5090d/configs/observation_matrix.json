@@ -1,6 +1,14 @@
 {
   "study_name": "8x5090d-observation-study",
   "git_remote_default": "https://github.com/chennyso/Megatron-LM.git",
+  "infrastructure": {
+    "paper_scope": "single-node-8x5090d-only",
+    "workspace_pvc": "seampipe-paper-workspace",
+    "model_pvc": "chenny-models-nfs",
+    "preferred_node": "g5",
+    "image": "harbor.bbt.sspu.edu.cn/nvcr/nvidia/pytorch:26.04-py3",
+    "result_root": "/workspace/runs/observation_8x5090d"
+  },
   "hardware": {
     "message_sizes_bytes": [
       1048576,
@@ -10,18 +18,76 @@
       268435456,
       1073741824
     ],
-    "gpu_counts": [2, 4, 8],
+    "gpu_counts": [
+      2,
+      4,
+      8
+    ],
     "collectives": [
       "all_reduce",
       "all_gather",
       "reduce_scatter",
       "all_to_all"
-    ]
+    ],
+    "repetitions": 5,
+    "warmup_iterations": 5,
+    "measure_iterations": 20
+  },
+  "datasets": {
+    "proxy_public_subset_v1": {
+      "id": "proxy_public_subset_v1",
+      "kind": "real",
+      "role": "proxy_only",
+      "hf_dataset": "HuggingFaceFW/fineweb-edu",
+      "revision": "main",
+      "slice_note": "Deterministic proxy subset for shakeout only. Not for paper claims.",
+      "document_count": 4096,
+      "data_path": "/workspace/datasets/fineweb_edu/proxy_slice/fineweb_edu_proxy_text_document",
+      "split": "99,1,0",
+      "tokenizer_type": "HuggingFaceTokenizer",
+      "extra_flags": [
+        "--no-create-attention-mask-in-dataloader",
+        "--num-workers",
+        "1"
+      ]
+    },
+    "formal_public_fineweb_edu_v1": {
+      "id": "formal_public_fineweb_edu_v1",
+      "kind": "real",
+      "role": "paper_main",
+      "hf_dataset": "HuggingFaceFW/fineweb-edu",
+      "revision": "main",
+      "slice_note": "Deterministic public mainline slice for all formal paper results.",
+      "document_count": 65536,
+      "data_path": "/workspace/datasets/fineweb_edu/formal_slice/fineweb_edu_formal_text_document",
+      "split": "99,1,0",
+      "tokenizer_type": "HuggingFaceTokenizer",
+      "extra_flags": [
+        "--no-create-attention-mask-in-dataloader",
+        "--num-workers",
+        "2"
+      ]
+    },
+    "local_sanity_v1": {
+      "id": "local_sanity_v1",
+      "kind": "real",
+      "role": "local_sanity",
+      "slice_note": "Local sanity workload. Never enters main figures or main tables.",
+      "data_path": "/workspace/datasets/local_sanity/local_sanity_text_document",
+      "split": "99,1,0",
+      "tokenizer_type": "HuggingFaceTokenizer",
+      "extra_flags": [
+        "--no-create-attention-mask-in-dataloader",
+        "--num-workers",
+        "2"
+      ]
+    }
   },
   "models": {
     "qwen3_8b_dense_proxy": {
       "paper_name": "Qwen3-8B Dense Proxy",
-      "notes": "Use this as the fast dense sweep unless you replace it with an exact Qwen3-7B configuration.",
+      "tokenizer_model": "/models/qwen3-8B",
+      "parameter_count_billion": 8.0,
       "num_layers": 36,
       "hidden_size": 4096,
       "ffn_hidden_size": 12288,
@@ -34,38 +100,38 @@
       "make_vocab_size_divisible_by": 128,
       "common_flags": [
         "--use-mcore-models",
-        "--attention-backend", "flash",
-        "--transformer-impl", "transformer_engine",
+        "--attention-backend",
+        "flash",
+        "--transformer-impl",
+        "transformer_engine",
         "--group-query-attention",
         "--bf16",
-        "--normalization", "RMSNorm",
-        "--norm-epsilon", "1e-6",
-        "--position-embedding-type", "rope",
-        "--rotary-base", "1000000",
-        "--rotary-percent", "1.0",
+        "--normalization",
+        "RMSNorm",
+        "--norm-epsilon",
+        "1e-6",
+        "--position-embedding-type",
+        "rope",
+        "--rotary-base",
+        "1000000",
+        "--rotary-percent",
+        "1.0",
+        "--use-rotary-position-embeddings",
         "--qk-layernorm",
         "--swiglu",
         "--disable-bias-linear",
         "--untie-embeddings-and-output-weights",
-        "--attention-dropout", "0.0",
-        "--hidden-dropout", "0.0",
-        "--mock-data",
-        "--tokenizer-type", "NullTokenizer",
-        "--no-create-attention-mask-in-dataloader",
-        "--no-mmap-bin-files",
-        "--num-workers", "1",
-        "--log-interval", "1",
-        "--timing-log-level", "2",
-        "--log-throughput",
-        "--eval-iters", "0",
-        "--eval-interval", "100000",
-        "--save-interval", "100000",
-        "--distributed-timeout-minutes", "60",
+        "--attention-dropout",
+        "0.0",
+        "--hidden-dropout",
+        "0.0",
         "--recompute-activations"
       ]
     },
     "qwen3_14b": {
       "paper_name": "Qwen3-14B",
+      "tokenizer_model": "/models/qwen3-14B",
+      "parameter_count_billion": 14.0,
       "num_layers": 40,
       "hidden_size": 5120,
       "ffn_hidden_size": 17408,
@@ -78,38 +144,39 @@
       "make_vocab_size_divisible_by": 128,
       "common_flags": [
         "--use-mcore-models",
-        "--attention-backend", "flash",
-        "--transformer-impl", "transformer_engine",
+        "--attention-backend",
+        "flash",
+        "--transformer-impl",
+        "transformer_engine",
         "--group-query-attention",
         "--bf16",
-        "--normalization", "RMSNorm",
-        "--norm-epsilon", "1e-6",
-        "--position-embedding-type", "rope",
-        "--rotary-base", "1000000",
-        "--rotary-percent", "1.0",
+        "--normalization",
+        "RMSNorm",
+        "--norm-epsilon",
+        "1e-6",
+        "--position-embedding-type",
+        "rope",
+        "--rotary-base",
+        "1000000",
+        "--rotary-percent",
+        "1.0",
+        "--use-rotary-position-embeddings",
         "--qk-layernorm",
         "--swiglu",
         "--disable-bias-linear",
         "--untie-embeddings-and-output-weights",
-        "--attention-dropout", "0.0",
-        "--hidden-dropout", "0.0",
-        "--mock-data",
-        "--tokenizer-type", "NullTokenizer",
-        "--no-create-attention-mask-in-dataloader",
-        "--no-mmap-bin-files",
-        "--num-workers", "1",
-        "--log-interval", "1",
-        "--timing-log-level", "2",
-        "--log-throughput",
-        "--eval-iters", "0",
-        "--eval-interval", "100000",
-        "--save-interval", "100000",
-        "--distributed-timeout-minutes", "60",
+        "--attention-dropout",
+        "0.0",
+        "--hidden-dropout",
+        "0.0",
         "--recompute-activations"
       ]
     },
     "qwen3_30b_a3b_moe": {
       "paper_name": "Qwen3-30B-A3B MoE",
+      "tokenizer_model": "/models/qwen3-30B-A3B",
+      "parameter_count_billion": 30.0,
+      "active_parameter_count_billion": 3.0,
       "num_layers": 48,
       "hidden_size": 2048,
       "ffn_hidden_size": 6144,
@@ -117,7 +184,7 @@
       "num_query_groups": 4,
       "kv_channels": 128,
       "seq_length": 2048,
-      "max_position_embeddings": 40960,
+      "max_position_embeddings": 8192,
       "vocab_size": 151936,
       "make_vocab_size_divisible_by": 128,
       "moe": {
@@ -130,201 +197,833 @@
       },
       "common_flags": [
         "--use-mcore-models",
-        "--attention-backend", "flash",
-        "--transformer-impl", "transformer_engine",
+        "--attention-backend",
+        "flash",
+        "--transformer-impl",
+        "transformer_engine",
         "--group-query-attention",
         "--bf16",
-        "--normalization", "RMSNorm",
-        "--norm-epsilon", "1e-6",
-        "--position-embedding-type", "rope",
-        "--rotary-base", "1000000",
-        "--rotary-percent", "1.0",
+        "--normalization",
+        "RMSNorm",
+        "--norm-epsilon",
+        "1e-6",
+        "--position-embedding-type",
+        "rope",
+        "--rotary-base",
+        "1000000",
+        "--rotary-percent",
+        "1.0",
+        "--use-rotary-position-embeddings",
         "--qk-layernorm",
         "--swiglu",
         "--disable-bias-linear",
         "--untie-embeddings-and-output-weights",
-        "--attention-dropout", "0.0",
-        "--hidden-dropout", "0.0",
-        "--mock-data",
-        "--tokenizer-type", "NullTokenizer",
-        "--no-create-attention-mask-in-dataloader",
-        "--no-mmap-bin-files",
-        "--num-workers", "1",
-        "--log-interval", "1",
-        "--timing-log-level", "2",
-        "--log-throughput",
-        "--eval-iters", "0",
-        "--eval-interval", "100000",
-        "--save-interval", "100000",
-        "--distributed-timeout-minutes", "60",
-        "--recompute-activations"
+        "--attention-dropout",
+        "0.0",
+        "--hidden-dropout",
+        "0.0",
+        "--recompute-activations",
+        "--no-use-tokenizer-model-from-checkpoint-args"
       ]
     }
   },
   "cases": [
     {
-      "id": "qwen8b_fsdp_only",
-      "phase": "baseline",
+      "id": "proxy_qwen8b_fsdp_only",
+      "paper_model_id": "proxy-qwen3-8b",
+      "paper_label": "8B proxy FSDP",
+      "phase": "proxy",
       "model": "qwen3_8b_dense_proxy",
-      "parallelism": {"tp": 1, "pp": 1, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 24, "micro_batch_size": 2, "global_batch_size": 64},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "proxy_public_subset_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 1,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 2,
+        "global_batch_size": 64
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 1000
+      },
+      "warmup_steps": 8,
+      "measure_steps": 8,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [],
+      "claim_membership": [],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "overlap_p2p_comm": false
     },
     {
-      "id": "qwen8b_pp2_fsdp",
-      "phase": "baseline",
+      "id": "proxy_qwen8b_pp2_fsdp",
+      "paper_model_id": "proxy-qwen3-8b",
+      "paper_label": "8B proxy PP2+FSDP",
+      "phase": "proxy",
       "model": "qwen3_8b_dense_proxy",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 24, "micro_batch_size": 2, "global_batch_size": 32},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "proxy_public_subset_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 2,
+        "global_batch_size": 32
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 1010
+      },
+      "warmup_steps": 8,
+      "measure_steps": 8,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [],
+      "claim_membership": [],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "overlap_p2p_comm": false
     },
     {
-      "id": "qwen8b_pp4_fsdp",
-      "phase": "baseline",
+      "id": "proxy_qwen8b_pp4_fsdp",
+      "paper_model_id": "proxy-qwen3-8b",
+      "paper_label": "8B proxy PP4+FSDP",
+      "phase": "proxy",
       "model": "qwen3_8b_dense_proxy",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 16},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "proxy_public_subset_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 16
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 1020
+      },
+      "warmup_steps": 8,
+      "measure_steps": 8,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [],
+      "claim_membership": [],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "overlap_p2p_comm": false
     },
     {
-      "id": "qwen8b_pp2_vpp2_fsdp",
-      "phase": "baseline",
+      "id": "proxy_qwen8b_pp2_vpp2_fsdp",
+      "paper_model_id": "proxy-qwen3-8b",
+      "paper_label": "8B proxy PP2+VPP2+FSDP",
+      "phase": "proxy",
       "model": "qwen3_8b_dense_proxy",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 1, "vp": 2},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 16},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "proxy_public_subset_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 2
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 16
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 1030
+      },
+      "warmup_steps": 8,
+      "measure_steps": 8,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [],
+      "claim_membership": [],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "layers_per_virtual_stage": 9,
       "overlap_p2p_comm": false
     },
     {
-      "id": "qwen8b_pp2_vpp4_fsdp",
-      "phase": "baseline",
+      "id": "proxy_qwen8b_pp2_vpp4_fsdp",
+      "paper_model_id": "proxy-qwen3-8b",
+      "paper_label": "8B proxy PP2+VPP4+FSDP",
+      "phase": "proxy",
       "model": "qwen3_8b_dense_proxy",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 1, "vp": 4},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 16},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
-      "layers_per_virtual_stage": 4,
+      "dataset_spec": "proxy_public_subset_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 4
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 16
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 1040
+      },
+      "warmup_steps": 8,
+      "measure_steps": 8,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [],
+      "claim_membership": [],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "pipeline_model_parallel_layout": "Et*5|t*4|t*4|t*5|t*5|t*4|t*4|t*5L",
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen14b_pp2_fsdp",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP2+FSDP",
       "phase": "baseline",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 16},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 16
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2000
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "baseline_throughput",
+        "pp_fsdp_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen14b_pp4_fsdp",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP4+FSDP",
       "phase": "baseline",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2010
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "baseline_throughput",
+        "pp_fsdp_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen14b_pp2_vpp2_fsdp",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP2+VPP2+FSDP",
       "phase": "baseline",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 1, "vp": 2},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 2
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2020
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "vpp_effect"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "layers_per_virtual_stage": 10,
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen14b_pp4_nonuniform_a",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP4 non-uniform A",
       "phase": "baseline",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2030
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "nonuniform_partition"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "pipeline_model_parallel_layout": "Et*11|t*10|t*10|t*9L",
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen14b_pp4_nonuniform_b",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP4 non-uniform B",
       "phase": "baseline",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 1, "vp": 2},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
-      "pipeline_model_parallel_layout": "Et*6|t*5|t*5|t*4|t*5|t*5|t*5|t*5L",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2040
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "nonuniform_partition"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "pipeline_model_parallel_layout": "Et*12|t*9|t*10|t*9L",
       "overlap_p2p_comm": false
     },
     {
-      "id": "qwen30b_pp2_ep2_fsdp",
+      "id": "qwen14b_pp4_nonuniform_c",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP4 non-uniform C",
       "phase": "baseline",
-      "model": "qwen3_30b_a3b_moe",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 2, "vp": 1},
-      "runtime": {"train_iters": 20, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
-      "extra_flags": ["--moe-grouped-gemm"],
+      "model": "qwen3_14b",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2050
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "nonuniform_partition"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "pipeline_model_parallel_layout": "Et*9|t*11|t*10|t*10L",
       "overlap_p2p_comm": false
     },
     {
-      "id": "qwen30b_pp4_ep2",
+      "id": "qwen30b_pp1_ep2_dp4",
+      "paper_model_id": "qwen3-30b-a3b",
+      "paper_label": "30B PP1 EP2 DP4",
       "phase": "baseline",
       "model": "qwen3_30b_a3b_moe",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 2, "vp": 1},
-      "runtime": {"train_iters": 20, "micro_batch_size": 1, "global_batch_size": 4},
-      "fsdp": {"enabled": false},
-      "extra_flags": ["--moe-grouped-gemm"],
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 1,
+        "ep": 2,
+        "vp": 1
+      },
+      "data_parallel_size_expected": 4,
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 3000
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "moe_feasibility",
+        "ep_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "extra_flags": [
+        "--moe-grouped-gemm"
+      ],
       "overlap_p2p_comm": false
     },
     {
-      "id": "qwen30b_ep4_no_pp",
+      "id": "qwen30b_pp1_ep4_dp2",
+      "paper_model_id": "qwen3-30b-a3b",
+      "paper_label": "30B PP1 EP4 DP2",
       "phase": "baseline",
       "model": "qwen3_30b_a3b_moe",
-      "parallelism": {"tp": 1, "pp": 1, "ep": 4, "vp": 1},
-      "runtime": {"train_iters": 20, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": false},
-      "extra_flags": ["--moe-grouped-gemm"],
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 1,
+        "ep": 4,
+        "vp": 1
+      },
+      "data_parallel_size_expected": 2,
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 3010
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "moe_feasibility",
+        "ep_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "extra_flags": [
+        "--moe-grouped-gemm"
+      ],
+      "overlap_p2p_comm": false
+    },
+    {
+      "id": "qwen30b_pp2_ep2_dp2",
+      "paper_model_id": "qwen3-30b-a3b",
+      "paper_label": "30B PP2 EP2 DP2",
+      "phase": "baseline",
+      "model": "qwen3_30b_a3b_moe",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 2,
+        "vp": 1
+      },
+      "data_parallel_size_expected": 2,
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 3020
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "moe_feasibility",
+        "ep_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "extra_flags": [
+        "--moe-grouped-gemm"
+      ],
+      "overlap_p2p_comm": false
+    },
+    {
+      "id": "qwen30b_pp2_ep4_dp1",
+      "paper_model_id": "qwen3-30b-a3b",
+      "paper_label": "30B PP2 EP4 DP1",
+      "phase": "baseline",
+      "model": "qwen3_30b_a3b_moe",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 4,
+        "vp": 1
+      },
+      "data_parallel_size_expected": 1,
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 4
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 3030
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "moe_feasibility",
+        "ep_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": false
+      },
+      "extra_flags": [
+        "--moe-grouped-gemm"
+      ],
+      "overlap_p2p_comm": false
+    },
+    {
+      "id": "qwen30b_pp4_ep2_dp1",
+      "paper_model_id": "qwen3-30b-a3b",
+      "paper_label": "30B PP4 EP2 DP1",
+      "phase": "baseline",
+      "model": "qwen3_30b_a3b_moe",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 2,
+        "vp": 1
+      },
+      "data_parallel_size_expected": 1,
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 4
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 3040
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2"
+      ],
+      "claim_membership": [
+        "moe_feasibility",
+        "ep_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": false
+      },
+      "extra_flags": [
+        "--moe-grouped-gemm"
+      ],
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen14b_nsys_baseline",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B NSYS baseline",
       "phase": "nsys",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 12, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
-      "profile": {"nsys": true, "step_start": 6, "step_end": 8},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8,
+        "train_iters": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 4000
+      },
+      "warmup_steps": 5,
+      "measure_steps": 2,
+      "profiler_policy": {
+        "nsys": true,
+        "step_start": 6,
+        "step_end": 7,
+        "profile_ranks": [
+          0,
+          3
+        ]
+      },
+      "figure_membership": [
+        "fig4"
+      ],
+      "claim_membership": [
+        "critical_path_baseline"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen14b_nsys_best_manual",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B NSYS best manual",
       "phase": "nsys",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 1, "vp": 2},
-      "runtime": {"train_iters": 12, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
-      "pipeline_model_parallel_layout": "Et*6|t*5|t*5|t*4|t*5|t*5|t*5|t*5L",
-      "profile": {"nsys": true, "step_start": 6, "step_end": 8},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8,
+        "train_iters": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 4010
+      },
+      "warmup_steps": 5,
+      "measure_steps": 2,
+      "profiler_policy": {
+        "nsys": true,
+        "step_start": 6,
+        "step_end": 7,
+        "profile_ranks": [
+          0,
+          3
+        ]
+      },
+      "figure_membership": [
+        "fig4"
+      ],
+      "claim_membership": [
+        "critical_path_manual"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "pipeline_model_parallel_layout": "Et*11|t*10|t*10|t*9L",
       "overlap_p2p_comm": false
     },
     {
       "id": "qwen30b_nsys_worst_interesting",
+      "paper_model_id": "qwen3-30b-a3b",
+      "paper_label": "30B NSYS worst interesting",
       "phase": "nsys",
       "model": "qwen3_30b_a3b_moe",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 2, "vp": 1},
-      "runtime": {"train_iters": 12, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
-      "profile": {"nsys": true, "step_start": 6, "step_end": 8},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 2,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8,
+        "train_iters": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 1,
+        "seed_base": 4020
+      },
+      "warmup_steps": 5,
+      "measure_steps": 2,
+      "profiler_policy": {
+        "nsys": true,
+        "step_start": 6,
+        "step_end": 7,
+        "profile_ranks": [
+          0,
+          1
+        ]
+      },
+      "figure_membership": [
+        "fig4"
+      ],
+      "claim_membership": [
+        "critical_path_moe"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "extra_flags": [
+        "--moe-grouped-gemm"
+      ],
       "overlap_p2p_comm": false
     },
     {
       "id": "rewrite_boundary_qwen14b",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "Boundary repartition 14B",
       "phase": "rewrite",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 4, "ep": 1, "vp": 1},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 5,
+        "seed_base": 5000
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig5"
+      ],
+      "claim_membership": [
+        "rewrite_gain_boundary"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "pipeline_model_parallel_layout": "Et*11|t*10|t*10|t*9L",
       "rewrite_type": "BoundaryRepartition",
       "baseline_case_id": "qwen14b_pp4_fsdp",
@@ -332,11 +1031,40 @@
     },
     {
       "id": "rewrite_granularity_qwen14b",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "Granularity rewrite 14B",
       "phase": "rewrite",
       "model": "qwen3_14b",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 1, "vp": 2},
-      "runtime": {"train_iters": 24, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 2
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 5,
+        "seed_base": 5010
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig5"
+      ],
+      "claim_membership": [
+        "rewrite_gain_granularity"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "layers_per_virtual_stage": 10,
       "rewrite_type": "GranularityRewrite",
       "baseline_case_id": "qwen14b_pp2_fsdp",
@@ -344,18 +1072,47 @@
     },
     {
       "id": "rewrite_load_qwen30b",
+      "paper_model_id": "qwen3-30b-a3b",
+      "paper_label": "Load rewrite 30B MoE",
       "phase": "rewrite",
       "model": "qwen3_30b_a3b_moe",
-      "parallelism": {"tp": 1, "pp": 2, "ep": 2, "vp": 1},
-      "runtime": {"train_iters": 20, "micro_batch_size": 1, "global_batch_size": 8},
-      "fsdp": {"enabled": true, "sharding_strategy": "optim_grads_params"},
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 2,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 5,
+        "seed_base": 5020
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig5"
+      ],
+      "claim_membership": [
+        "rewrite_gain_load"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "extra_flags": [
         "--moe-grouped-gemm",
         "--overlap-moe-expert-parallel-comm",
         "--delay-wgrad-compute"
       ],
       "rewrite_type": "LoadRewrite",
-      "baseline_case_id": "qwen30b_pp2_ep2_fsdp",
+      "baseline_case_id": "qwen30b_pp2_ep2_dp2",
       "overlap_p2p_comm": false
     }
   ]
