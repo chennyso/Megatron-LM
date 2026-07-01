@@ -42,11 +42,12 @@ spec:
             export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
             export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
             export PYTHONUNBUFFERED=1
+            export GIT_SSL_NO_VERIFY=1
             mkdir -p "$(dirname "${REPO_DIR}")"
             if [ ! -d "${REPO_DIR}/.git" ]; then
-              git clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
+              git -c http.sslVerify=false clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
             else
-              git -C "${REPO_DIR}" fetch origin "${GIT_BRANCH}"
+              git -C "${REPO_DIR}" -c http.sslVerify=false fetch origin "${GIT_BRANCH}"
               git -C "${REPO_DIR}" checkout "${GIT_BRANCH}"
               git -C "${REPO_DIR}" reset --hard "origin/${GIT_BRANCH}"
             fi

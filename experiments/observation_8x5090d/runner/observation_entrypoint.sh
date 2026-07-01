@@ -10,11 +10,12 @@ REPO_DIR="${REPO_DIR:-/workspace/code/Megatron-LM-observation}"
 CASE_ID="${CASE_ID:-}"
 
 mkdir -p "$(dirname "${REPO_DIR}")" "${RESULT_ROOT}"
+export GIT_SSL_NO_VERIFY=1
 
 if [ ! -d "${REPO_DIR}/.git" ]; then
-  git clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
+  git -c http.sslVerify=false clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
 else
-  git -C "${REPO_DIR}" fetch origin "${GIT_BRANCH}"
+  git -C "${REPO_DIR}" -c http.sslVerify=false fetch origin "${GIT_BRANCH}"
   git -C "${REPO_DIR}" checkout "${GIT_BRANCH}"
   git -C "${REPO_DIR}" reset --hard "origin/${GIT_BRANCH}"
 fi
