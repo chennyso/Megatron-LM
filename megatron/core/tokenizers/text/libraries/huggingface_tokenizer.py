@@ -4,10 +4,11 @@ import logging
 from typing import List, Optional
 
 try:
-    import transformers
+    from transformers import AutoTokenizer
 
     HAVE_TRANSFORMERS = True
 except ModuleNotFoundError:
+    AutoTokenizer = None
     HAVE_TRANSFORMERS = False
 
 from megatron.core.utils import log_single_rank
@@ -64,23 +65,26 @@ class HuggingFaceTokenizer(MegatronTokenizerTextAbstract):
                 tokens / prompt tokens (if any), yielding self.tokenizer(text).input_ids
         """
 
+        if AutoTokenizer is None:
+            raise ImportError("HuggingFaceTokenizer requires the transformers package.")
+
         try:
             # this logic deals with different huggingface tokenizers having different args
             if vocab_file is None:
-                self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+                self.tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path=tokenizer_path,
                     use_fast=use_fast,
                     trust_remote_code=trust_remote_code,
                 )
             elif merges_file is None:
-                self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+                self.tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path=tokenizer_path,
                     vocab_file=vocab_file,
                     use_fast=use_fast,
                     trust_remote_code=trust_remote_code,
                 )
             else:
-                self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+                self.tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path=tokenizer_path,
                     vocab_file=vocab_file,
                     merge_files=merges_file,
