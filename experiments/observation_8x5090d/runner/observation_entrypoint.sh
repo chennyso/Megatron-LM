@@ -22,6 +22,8 @@ fi
 
 cd "${REPO_DIR}"
 
+source "${REPO_DIR}/experiments/observation_8x5090d/runner/activate_observation_env.sh"
+
 python3 --version
 nvidia-smi || true
 
