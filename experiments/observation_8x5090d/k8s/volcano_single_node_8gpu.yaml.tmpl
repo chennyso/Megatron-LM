@@ -1,0 +1,105 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: default
+  labels:
+    app: __JOB_NAME__
+spec:
+  minAvailable: 1
+  schedulerName: volcano
+  queue: default
+  tasks:
+  - replicas: 1
+    name: worker
+    template:
+      metadata:
+        labels:
+          app: __JOB_NAME__
+        annotations:
+          k8s.v1.cni.cncf.io/networks: sriov-ib-network
+      spec:
+        restartPolicy: Never
+        nodeSelector:
+          kubernetes.io/hostname: __NODE_NAME__
+        containers:
+        - name: observation
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+          - |
+            set -euo pipefail
+            export NCCL_P2P_DISABLE=1
+            export NCCL_IB_DISABLE=0
+            export NCCL_NET_GDR_LEVEL=5
+            export NCCL_IB_GID_INDEX=0
+            export NCCL_IB_TC=136
+            export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+            export NCCL_IB_QPS_PER_CONNECTION=4
+            export NCCL_IB_TIMEOUT=22
+            export NCCL_MIN_NCHANNELS=4
+            export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+            export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+            export PYTHONUNBUFFERED=1
+            mkdir -p "$(dirname "${REPO_DIR}")"
+            if [ ! -d "${REPO_DIR}/.git" ]; then
+              git clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
+            else
+              git -C "${REPO_DIR}" fetch origin "${GIT_BRANCH}"
+              git -C "${REPO_DIR}" checkout "${GIT_BRANCH}"
+              git -C "${REPO_DIR}" reset --hard "origin/${GIT_BRANCH}"
+            fi
+            bash "${REPO_DIR}/experiments/observation_8x5090d/runner/observation_entrypoint.sh"
+          env:
+          - name: PHASE
+            value: "__PHASE__"
+          - name: RUN_ID
+            value: "__RUN_ID__"
+          - name: CASE_ID
+            value: "__CASE_ID__"
+          - name: GIT_REMOTE_URL
+            value: "__GIT_REMOTE_URL__"
+          - name: GIT_BRANCH
+            value: "__GIT_BRANCH__"
+          - name: REPO_DIR
+            value: /workspace/code/Megatron-LM-observation
+          - name: RESULT_ROOT
+            value: /workspace/runs/observation_8x5090d/__RUN_ID__
+          resources:
+            requests:
+              nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
+              cpu: "__CPU_REQUEST__"
+              memory: "__MEM_REQUEST__"
+            limits:
+              nvidia.com/gpu: "8"
+              nvidia.com/mlnxnics: "1"
+              cpu: "__CPU_LIMIT__"
+              memory: "__MEM_LIMIT__"
+          securityContext:
+            capabilities:
+              add: ["IPC_LOCK"]
+          volumeMounts:
+          - name: workspace
+            mountPath: /workspace
+          - name: models
+            mountPath: /models
+          - name: dev-infiniband
+            mountPath: /dev/infiniband
+          - name: dshm
+            mountPath: /dev/shm
+        volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: __WORKSPACE_PVC__
+        - name: models
+          persistentVolumeClaim:
+            claimName: __MODEL_PVC__
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: __SHM_SIZE__
