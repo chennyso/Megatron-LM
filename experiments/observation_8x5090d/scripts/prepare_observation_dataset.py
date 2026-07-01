@@ -134,8 +134,6 @@ def main() -> int:
         str(raw_jsonl),
         "--output-prefix",
         str(output_prefix),
-        "--dataset-impl",
-        "mmap",
         "--tokenizer-type",
         dataset_cfg.get("tokenizer_type", "HuggingFaceTokenizer"),
         "--tokenizer-model",
