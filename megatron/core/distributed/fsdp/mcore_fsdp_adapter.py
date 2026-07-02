@@ -538,12 +538,12 @@ def _get_hsdp_tp_mesh(outer_fsdp_dp_group, dp_cp_group, tp_group, ep_size=1):
 
 def _get_dp_tp_mesh(dp_cp_group, tp_group, ep_size=1):
     assert HAVE_EINOPS, "einops is not installed. Please install it with `pip install einops`."
-    world_size = dist.get_world_size()
 
     tp_size = dist.get_world_size(tp_group) if tp_group is not None else 1
+    dp_cp_ranks = torch.tensor(dist.get_process_group_ranks(dp_cp_group), dtype=torch.long)
     # TODO: Supports configurable (dp, cp, ep, tp) order.
     mesh = einops.rearrange(
-        torch.arange(world_size),
+        dp_cp_ranks,
         "(dp_cp ep tp) -> ep dp_cp tp",
         dp_cp=dp_cp_group.size(),
         tp=tp_size,

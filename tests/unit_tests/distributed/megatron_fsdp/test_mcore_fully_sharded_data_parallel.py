@@ -1627,3 +1627,46 @@ class TestFsdpHybridModelDoubleBuffer:
             optimizer.step()
 
         torch.cuda.synchronize()
+
+    @pytest.mark.skipif(
+        version.parse(torch.__version__) < version.parse('2.3.0'),
+        reason="Device mesh feature requires PyTorch 2.3 or later",
+    )
+    def test_fsdp_dp_tp_mesh_uses_process_group_ranks(self):
+        """DP-TP mesh construction should follow the DP group ranks, not global rank order."""
+        if not torch.distributed.is_initialized():
+            torch.distributed.init_process_group(backend='nccl')
+
+        if torch.distributed.get_world_size() != 8:
+            pytest.skip("This test requires 8 GPUs.")
+
+        grid = HyperCommGrid([4], ["dp"])
+        pg_collection = ProcessGroupCollection()
+        pg_collection.dp = grid.create_pg("dp")
+        pg_collection.dp_cp = pg_collection.dp
+
+        fsdp_config = DistributedDataParallelConfig(
+            data_parallel_sharding_strategy="optim_grads_params",
+            overlap_grad_reduce=True,
+            overlap_param_gather=True,
+            bucket_size=10000,
+            use_megatron_fsdp=True,
+        )
+        model = TestModel(input_dim=13, output_dim=17).cuda()
+        transformer_config = TransformerConfig(
+            num_attention_heads=1, num_layers=1, context_parallel_size=1
+        )
+        fsdp_model = FullyShardedDataParallel(
+            config=transformer_config,
+            ddp_config=fsdp_config,
+            module=model,
+            pg_collection=pg_collection,
+            fsdp_unit_modules=[torch.nn.Linear],
+        )
+
+        expected_dp_ranks = sorted(dist.get_process_group_ranks(pg_collection.dp))
+        actual_dp_ranks = sorted(
+            dist.get_process_group_ranks(fsdp_model.megatron_fsdp_dist_index.get_dp_group())
+        )
+        assert actual_dp_ranks == expected_dp_ranks
+        fsdp_model.stop_communication()
