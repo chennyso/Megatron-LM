@@ -1,0 +1,9 @@
+case_id,paper_label,phase,paper_model_id,dataset_spec,repeat_count,total_repeat_count,valid_repeat_count,failed_repeat_count,status,had_failed_attempt
+proxy_qwen8b_pp2_fsdp,8B proxy PP2+FSDP,proxy,proxy-qwen3-8b,proxy_public_subset_v1,1,10,1,9,ok,True
+qwen14b_pp2_fsdp,14B PP2+FSDP,baseline,qwen3-14b,formal_public_fineweb_edu_v1,0,1,0,1,error,True
+qwen14b_pp4_fsdp,14B PP4+FSDP,baseline,qwen3-14b,formal_public_fineweb_edu_v1,0,1,0,1,error,True
+qwen30b_pp4_ep2_dp1,30B PP4 EP2 DP1,baseline,qwen3-30b-a3b,formal_public_fineweb_edu_v1,0,1,0,1,error,True
+qwen8b_fsdp_only,8B FSDP-only,baseline,qwen3-8b,formal_public_fineweb_edu_v1,0,1,0,1,error,True
+qwen8b_pp2_fsdp,8B PP2+FSDP,baseline,qwen3-8b,formal_public_fineweb_edu_v1,3,4,3,1,ok,True
+qwen8b_pp2_vpp2_fsdp,8B PP2+VPP2+FSDP,baseline,qwen3-8b,formal_public_fineweb_edu_v1,0,4,0,4,error,True
+qwen8b_pp4_fsdp,8B PP4+FSDP,baseline,qwen3-8b,formal_public_fineweb_edu_v1,3,4,3,1,ok,True

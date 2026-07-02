@@ -14,9 +14,11 @@ wandb/
 onelogger.log
 onelogger.err
 .venv
+.venv-observation-figures/
 runs/
 /test_cases/
 **/dist/
+experiments/observation_8x5090d/results/**/figures/*.tiff
 
 # Sphinx documentation
 docs/_build
