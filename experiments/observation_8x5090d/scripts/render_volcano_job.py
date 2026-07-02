@@ -76,7 +76,7 @@ def main() -> int:
     parser.add_argument("--workspace-pvc", default="seampipe-paper-workspace")
     parser.add_argument("--model-pvc", default="chenny-models-nfs")
     parser.add_argument("--image", default="harbor.bbt.sspu.edu.cn/nvcr/nvidia/pytorch:26.04-py3")
-    parser.add_argument("--gpu-resource-name", default="mirage.com/gpu")
+    parser.add_argument("--gpu-resource-name", default="nvidia.com/gpu")
     parser.add_argument("--cpu-request", default="24")
     parser.add_argument("--cpu-limit", default="48")
     parser.add_argument("--mem-request", default="160Gi")

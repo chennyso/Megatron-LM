@@ -8,7 +8,7 @@ figure scripts.
 ## Scope
 
 - Main paper scope: single-node `g5` with `8 x RTX 5090`
-- Main GPU resource: `mirage.com/gpu`
+- Main GPU resource: `nvidia.com/gpu`
 - Main storage: `NFS PVC` (`seampipe-paper-workspace`)
 - Main model store: `chenny-models-nfs`
 - Main public workload: deterministic `FineWeb-Edu` slice on NFS

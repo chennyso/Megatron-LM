@@ -104,6 +104,26 @@ def build_dataset_args(dataset_cfg: dict, model_cfg: dict) -> list[str]:
     return args
 
 
+def detect_local_world_size() -> int:
+    override = os.environ.get("OBS_NPROC_PER_NODE")
+    if override:
+        return int(override)
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+        if count > 0:
+            return count
+    except Exception:
+        pass
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible:
+        visible = [item.strip() for item in cuda_visible.split(",") if item.strip()]
+        if visible:
+            return len(visible)
+    return 8
+
+
 def case_matches(case: dict, phase: str, case_id: str | None) -> bool:
     if case["phase"] != phase:
         return False
@@ -261,7 +281,7 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
             "-m",
             "torch.distributed.run",
             "--nproc_per_node",
-            "8",
+            str(detect_local_world_size()),
             "--nnodes",
             "1",
             "--node_rank",
