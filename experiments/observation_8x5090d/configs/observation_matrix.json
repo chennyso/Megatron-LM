@@ -567,6 +567,123 @@
       "overlap_p2p_comm": true
     },
     {
+      "id": "qwen8b_pp2_bs4_fsdp",
+      "paper_model_id": "qwen3-8b",
+      "paper_label": "8B PP2+FSDP BS4",
+      "phase": "baseline",
+      "model": "qwen3_8b_dense_proxy",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 4
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 1830
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "batch_sweep"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "overlap_p2p_comm": false
+    },
+    {
+      "id": "qwen8b_pp2_bs16_fsdp",
+      "paper_model_id": "qwen3-8b",
+      "paper_label": "8B PP2+FSDP BS16",
+      "phase": "baseline",
+      "model": "qwen3_8b_dense_proxy",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 16
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 1840
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "batch_sweep"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "overlap_p2p_comm": false
+    },
+    {
+      "id": "qwen8b_pp4_bs2_fsdp",
+      "paper_model_id": "qwen3-8b",
+      "paper_label": "8B PP4+FSDP BS2",
+      "phase": "baseline",
+      "model": "qwen3_8b_dense_proxy",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 2
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 1850
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "batch_sweep"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "overlap_p2p_comm": false
+    },
+    {
       "id": "qwen14b_pp2_fsdp",
       "paper_model_id": "qwen3-14b",
       "paper_label": "14B PP2+FSDP",
@@ -683,6 +800,46 @@
         "sharding_strategy": "optim_grads_params"
       },
       "layers_per_virtual_stage": 10,
+      "overlap_p2p_comm": false
+    },
+    {
+      "id": "qwen14b_tp2_pp2_fsdp",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B TP2+PP2+FSDP",
+      "phase": "baseline",
+      "model": "qwen3_14b",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 2,
+        "pp": 2,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2060
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "tp_tradeoff",
+        "pp_fsdp_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
       "overlap_p2p_comm": false
     },
     {
