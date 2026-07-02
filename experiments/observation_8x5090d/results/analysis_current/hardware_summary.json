@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-07-01T18:23:10",
+  "gpu_count": 8,
+  "statistics_policy": {
+    "repetitions": 5,
+    "warmup_iterations": 5,
+    "measure_iterations": 20,
+    "reported_statistics": [
+      "mean",
+      "std",
+      "95% CI"
+    ]
+  },
+  "files": {
+    "nvidia_smi": "nvidia-smi.txt",
+    "topology": "nvidia-smi-topo.txt",
+    "nvlink": "nvidia-smi-nvlink.txt",
+    "gpu_query": "nvidia-smi-query.csv",
+    "lscpu": "lscpu.txt",
+    "numactl": "numactl-hardware.txt",
+    "pairwise_p2p_raw": "pairwise_p2p_raw.csv",
+    "pairwise_p2p_summary": "pairwise_p2p_summary.csv",
+    "nccl_raw": "nccl_collectives_raw.csv",
+    "nccl_summary": "nccl_collectives_summary.csv",
+    "nccl_raw_count": 360
+  }
+}

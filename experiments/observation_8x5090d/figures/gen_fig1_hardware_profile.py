@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -28,21 +29,27 @@ TOPOLOGY_CMAP = ListedColormap(
         "#2171b5",
     ]
 )
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+GPU_LABEL_RE = re.compile(r"GPU\d+")
 
 
 def parse_topology_matrix(path: Path) -> tuple[list[str], np.ndarray]:
-    rows = [line.strip() for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+    rows = [
+        ANSI_RE.sub("", line).strip()
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if line.strip()
+    ]
     header = None
     matrix_rows: list[list[str]] = []
-    labels: list[str] = []
     for line in rows:
-        if line.startswith("GPU0") or line.startswith("GPU1"):
-            header = line.split()
-            continue
         tokens = line.split()
-        if tokens and tokens[0].startswith("GPU"):
-            labels.append(tokens[0])
-            matrix_rows.append(tokens[1 : 1 + len(labels) + (len(header or []) - len(labels))])
+        if not tokens:
+            continue
+        if header is None and GPU_LABEL_RE.fullmatch(tokens[0]):
+            header = [token for token in tokens if GPU_LABEL_RE.fullmatch(token)]
+            continue
+        if tokens and GPU_LABEL_RE.fullmatch(tokens[0]):
+            matrix_rows.append(tokens[1 : 1 + len(header or [])])
     if header is None or not matrix_rows:
         raise SystemExit("Failed to parse nvidia-smi topo output.")
     width = len(header)
@@ -51,6 +58,8 @@ def parse_topology_matrix(path: Path) -> tuple[list[str], np.ndarray]:
         [[TOPOLOGY_TO_INT.get(cell, 0) for cell in row] for row in normalized],
         dtype=float,
     )
+    if numeric.shape != (width, width):
+        raise SystemExit(f"Unexpected topology matrix shape {numeric.shape}; expected {(width, width)}.")
     return header, numeric
 
 
@@ -65,6 +74,7 @@ def main() -> int:
     header, topo_matrix = parse_topology_matrix(analysis_dir / "nvidia-smi-topo.txt")
     p2p = pd.read_csv(analysis_dir / "pairwise_p2p_summary.csv")
     nccl = pd.read_csv(analysis_dir / "nccl_collectives_summary.csv")
+    nccl = nccl[nccl["time_value_mean"] > 0].copy()
     p2p_max = p2p[p2p["num_bytes"] == p2p["num_bytes"].max()]
     p2p_heatmap = p2p_max.pivot(index="src_gpu", columns="dst_gpu", values="bandwidth_gbps_mean")
     target_bytes = 64 * 1024 * 1024
@@ -85,7 +95,8 @@ def main() -> int:
     ax.set_xlabel("Peer GPU")
     ax.set_ylabel("Source GPU")
     panel_label(ax, "(a)")
-    fig.colorbar(topo_im, ax=ax, fraction=0.046, pad=0.04, ticks=range(len(TOPOLOGY_ORDER)))
+    topo_cbar = fig.colorbar(topo_im, ax=ax, fraction=0.046, pad=0.04, ticks=range(len(TOPOLOGY_ORDER)))
+    topo_cbar.ax.set_yticklabels(TOPOLOGY_ORDER)
 
     ax = axes[0, 1]
     p2p_im = ax.imshow(p2p_heatmap.values, cmap="viridis")
@@ -121,7 +132,7 @@ def main() -> int:
         ax.errorbar(x, y, yerr=yerr, marker="o", linewidth=1.2, label=collective, color=COLORS[idx % len(COLORS)])
     ax.set_xticks(sorted(nccl_latency["gpu_count"].unique()))
     ax.set_xlabel("GPU count")
-    ax.set_ylabel("Collective latency")
+    ax.set_ylabel("Collective latency (us)")
     ax.legend(frameon=False, ncol=2)
     panel_label(ax, "(d)")
 
