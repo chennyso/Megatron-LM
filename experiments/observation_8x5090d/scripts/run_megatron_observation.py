@@ -401,6 +401,11 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
             ],
             check=True,
         )
+        if return_code != 0:
+            raise RuntimeError(
+                f"Case {case['id']} repeat {repeat_index} failed with return code {return_code}; "
+                f"see {combined_path}"
+            )
 
 
 def main() -> int:

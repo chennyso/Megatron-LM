@@ -100,7 +100,7 @@
       "num_attention_heads": 32,
       "num_query_groups": 8,
       "kv_channels": 128,
-      "seq_length": 4096,
+      "seq_length": 2048,
       "max_position_embeddings": 40960,
       "vocab_size": 151936,
       "make_vocab_size_divisible_by": 128,
@@ -248,8 +248,8 @@
         "vp": 1
       },
       "runtime": {
-        "micro_batch_size": 2,
-        "global_batch_size": 64
+        "micro_batch_size": 1,
+        "global_batch_size": 8
       },
       "repeat_policy": {
         "independent_runs": 1,
@@ -282,8 +282,8 @@
         "vp": 1
       },
       "runtime": {
-        "micro_batch_size": 2,
-        "global_batch_size": 32
+        "micro_batch_size": 1,
+        "global_batch_size": 8
       },
       "repeat_policy": {
         "independent_runs": 1,

@@ -41,6 +41,7 @@ spec:
             export NCCL_MIN_NCHANNELS=4
             export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
             export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+            export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
             export PYTHONUNBUFFERED=1
             export GIT_SSL_NO_VERIFY=1
             mkdir -p "$(dirname "${REPO_DIR}")"
