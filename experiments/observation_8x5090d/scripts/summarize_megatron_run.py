@@ -95,7 +95,7 @@ def parse_dmon(path: Path) -> tuple[list[dict], dict]:
         if not stripped or stripped.startswith("#"):
             continue
         tokens = stripped.split()
-        if len(tokens) < 4 or not tokens[0].isdigit():
+        if len(tokens) < 6 or not tokens[0].isdigit():
             continue
         try:
             samples.append(
@@ -103,8 +103,8 @@ def parse_dmon(path: Path) -> tuple[list[dict], dict]:
                     "sample_index": sample_index,
                     "gpu": int(tokens[0]),
                     "power_w": float(tokens[1]),
-                    "gpu_util": float(tokens[2]),
-                    "mem_util_or_clock": float(tokens[3]),
+                    "gpu_util": float(tokens[4]),
+                    "mem_util_or_clock": float(tokens[5]),
                 }
             )
         except ValueError:
