@@ -38,6 +38,14 @@ def current_branch() -> str:
 
 
 def render(args: argparse.Namespace) -> str:
+    sriov_network_annotation = ""
+    mlnxnics_quantity = "1"
+    nccl_ib_disable = "0"
+    if args.disable_sriov_ib_network:
+        sriov_network_annotation = ""
+        mlnxnics_quantity = "0"
+        nccl_ib_disable = "1"
+
     replacements = {
         "__JOB_NAME__": args.job_name,
         "__NODE_NAME__": args.node,
@@ -57,6 +65,9 @@ def render(args: argparse.Namespace) -> str:
         "__SHM_SIZE__": args.shm_size,
         "__OBS_REPEAT_COUNT_OVERRIDE__": args.obs_repeat_count_override or "",
         "__OBS_SEED_BASE_OVERRIDE__": args.obs_seed_base_override or "",
+        "__SRIOV_NETWORK_ANNOTATION__": sriov_network_annotation,
+        "__MLNXNICS_QUANTITY__": mlnxnics_quantity,
+        "__NCCL_IB_DISABLE__": nccl_ib_disable,
     }
     rendered = TEMPLATE_PATH.read_text(encoding="utf-8")
     for old, new in replacements.items():
@@ -82,6 +93,7 @@ def main() -> int:
     parser.add_argument("--mem-request", default="160Gi")
     parser.add_argument("--mem-limit", default="240Gi")
     parser.add_argument("--shm-size", default="128Gi")
+    parser.add_argument("--disable-sriov-ib-network", action="store_true")
     parser.add_argument("--obs-repeat-count-override")
     parser.add_argument("--obs-seed-base-override")
     parser.add_argument("--apply", action="store_true")
