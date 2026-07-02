@@ -9,6 +9,7 @@ import shlex
 import signal
 import subprocess
 import time
+import shutil
 from pathlib import Path
 
 
@@ -114,8 +115,14 @@ def case_matches(case: dict, phase: str, case_id: str | None) -> bool:
 def maybe_start_dmon(repeat_dir: Path) -> tuple[subprocess.Popen | None, object | None]:
     output_path = repeat_dir / "nvidia-smi-dmon.log"
     handle = output_path.open("w", encoding="utf-8")
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        handle.write("nvidia-smi not found; skipping dmon capture.\n")
+        handle.flush()
+        handle.close()
+        return None, None
     proc = subprocess.Popen(
-        ["nvidia-smi", "dmon", "-s", "pucm", "-d", "1"],
+        [nvidia_smi, "dmon", "-s", "pucm", "-d", "1"],
         stdout=handle,
         stderr=subprocess.STDOUT,
         text=True,

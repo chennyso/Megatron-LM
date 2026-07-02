@@ -42,6 +42,7 @@ def render(args: argparse.Namespace) -> str:
         "__JOB_NAME__": args.job_name,
         "__NODE_NAME__": args.node,
         "__IMAGE__": args.image,
+        "__GPU_RESOURCE_NAME__": args.gpu_resource_name,
         "__PHASE__": args.phase,
         "__RUN_ID__": args.run_id,
         "__CASE_ID__": args.case_id or "",
@@ -75,6 +76,7 @@ def main() -> int:
     parser.add_argument("--workspace-pvc", default="seampipe-paper-workspace")
     parser.add_argument("--model-pvc", default="chenny-models-nfs")
     parser.add_argument("--image", default="harbor.bbt.sspu.edu.cn/nvcr/nvidia/pytorch:26.04-py3")
+    parser.add_argument("--gpu-resource-name", default="mirage.com/gpu")
     parser.add_argument("--cpu-request", default="24")
     parser.add_argument("--cpu-limit", default="48")
     parser.add_argument("--mem-request", default="160Gi")

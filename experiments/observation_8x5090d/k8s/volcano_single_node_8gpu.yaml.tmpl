@@ -68,7 +68,7 @@ spec:
           - name: NODE_NAME
             value: "__NODE_NAME__"
           - name: REPO_DIR
-            value: /workspace/code/Megatron-LM-observation
+            value: /workspace/code/Megatron-LM-observation/__RUN_ID__
           - name: RESULT_ROOT
             value: /workspace/runs/observation_8x5090d/__RUN_ID__
           - name: OBS_REPEAT_COUNT_OVERRIDE
@@ -77,12 +77,12 @@ spec:
             value: "__OBS_SEED_BASE_OVERRIDE__"
           resources:
             requests:
-              nvidia.com/gpu: "8"
+              __GPU_RESOURCE_NAME__: "8"
               nvidia.com/mlnxnics: "1"
               cpu: "__CPU_REQUEST__"
               memory: "__MEM_REQUEST__"
             limits:
-              nvidia.com/gpu: "8"
+              __GPU_RESOURCE_NAME__: "8"
               nvidia.com/mlnxnics: "1"
               cpu: "__CPU_LIMIT__"
               memory: "__MEM_LIMIT__"

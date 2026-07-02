@@ -12,6 +12,10 @@ CASE_ID="${CASE_ID:-}"
 mkdir -p "$(dirname "${REPO_DIR}")" "${RESULT_ROOT}"
 export GIT_SSL_NO_VERIFY=1
 
+if [ -f "${REPO_DIR}/.git/index.lock" ]; then
+  rm -f "${REPO_DIR}/.git/index.lock"
+fi
+
 if [ ! -d "${REPO_DIR}/.git" ]; then
   git -c http.sslVerify=false clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
 else
@@ -25,7 +29,11 @@ cd "${REPO_DIR}"
 source "${REPO_DIR}/experiments/observation_8x5090d/runner/activate_observation_env.sh"
 
 "${OBS_PYTHON}" --version
-nvidia-smi || true
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi || true
+else
+  echo "[observation-env] nvidia-smi not found; skipping GPU query"
+fi
 
 MATRIX_PATH="experiments/observation_8x5090d/configs/observation_matrix.json"
 
