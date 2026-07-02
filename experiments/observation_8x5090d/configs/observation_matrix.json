@@ -1251,6 +1251,61 @@
       ]
     },
     {
+      "id": "qwen14b_tp2_pp4_tied_pao_s256_gb1",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B TP2+PP4 Tied-Emb PAO S256 GB1",
+      "phase": "baseline",
+      "model": "qwen3_14b_tied_rescue",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 2,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 1
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2080
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "feasibility_boundary",
+        "tp_tradeoff",
+        "pp_scaling",
+        "optimizer_precision",
+        "embedding_tying"
+      ],
+      "pipeline_model_parallel_layout": "Et*9|t*11|t*10|t*10L",
+      "seq_length_override": 256,
+      "overlap_p2p_comm": false,
+      "extra_flags": [
+        "--use-distributed-optimizer",
+        "--use-precision-aware-optimizer",
+        "--main-params-dtype",
+        "fp16",
+        "--main-grads-dtype",
+        "bf16",
+        "--exp-avg-dtype",
+        "fp16",
+        "--exp-avg-sq-dtype",
+        "fp16",
+        "--ckpt-format",
+        "torch_dist"
+      ]
+    },
+    {
       "id": "qwen14b_pp4_nonuniform_a",
       "paper_model_id": "qwen3-14b",
       "paper_label": "14B PP4 non-uniform A",
