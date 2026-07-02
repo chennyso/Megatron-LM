@@ -38,11 +38,11 @@ def current_branch() -> str:
 
 
 def render(args: argparse.Namespace) -> str:
-    sriov_network_annotation = ""
+    sriov_network_annotation = "k8s.v1.cni.cncf.io/networks: sriov-ib-network"
     mlnxnics_quantity = "1"
     nccl_ib_disable = "0"
     if args.disable_sriov_ib_network:
-        sriov_network_annotation = ""
+        sriov_network_annotation = 'k8s.v1.cni.cncf.io/networks: ""'
         mlnxnics_quantity = "0"
         nccl_ib_disable = "1"
 

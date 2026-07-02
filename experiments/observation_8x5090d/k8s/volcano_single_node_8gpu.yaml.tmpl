@@ -13,9 +13,9 @@ spec:
   - replicas: 1
     name: worker
     template:
-        metadata:
-          labels:
-            app: __JOB_NAME__
+      metadata:
+        labels:
+          app: __JOB_NAME__
         annotations:
           __SRIOV_NETWORK_ANNOTATION__
       spec:
