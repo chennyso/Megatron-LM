@@ -94,6 +94,14 @@ def collect_run_rows(result_root: Path) -> list[dict]:
     return rows
 
 
+def is_valid_measurement(row: dict) -> bool:
+    return (
+        not bool(row.get("oom_or_runtime_error"))
+        and int(row.get("steady_state_step_count") or 0) > 0
+        and row.get("tokens_per_second_mean") is not None
+    )
+
+
 def aggregate_case_rows(run_rows: list[dict]) -> list[dict]:
     grouped: dict[str, list[dict]] = {}
     for row in run_rows:
@@ -102,13 +110,19 @@ def aggregate_case_rows(run_rows: list[dict]) -> list[dict]:
     aggregates: list[dict] = []
     for case_id, rows in sorted(grouped.items()):
         first = rows[0]
+        valid_rows = [row for row in rows if is_valid_measurement(row)]
+        metric_rows = valid_rows if valid_rows else rows
         aggregate = {
             "case_id": case_id,
             "phase": first["phase"],
             "paper_model_id": first["paper_model_id"],
             "paper_label": first["paper_label"],
             "dataset_spec": first["dataset_spec"],
-            "repeat_count": len(rows),
+            "repeat_count": len(valid_rows),
+            "total_repeat_count": len(rows),
+            "valid_repeat_count": len(valid_rows),
+            "failed_repeat_count": len(rows) - len(valid_rows),
+            "feasible": bool(valid_rows),
             "oom_or_runtime_error_any": any(bool(row["oom_or_runtime_error"]) for row in rows),
             "figure_membership": first["figure_membership"],
             "claim_membership": first["claim_membership"],
@@ -129,7 +143,7 @@ def aggregate_case_rows(run_rows: list[dict]) -> list[dict]:
             "loss_steady_mean",
             "rank_skew_percent",
         ]:
-            summary = summarize_numeric(row.get(metric_key) for row in rows)
+            summary = summarize_numeric(row.get(metric_key) for row in metric_rows)
             for stat_name, stat_value in summary.items():
                 aggregate[f"{metric_key}_{stat_name}"] = stat_value
         aggregates.append(aggregate)
@@ -147,7 +161,11 @@ def build_feasibility_matrix(case_rows: list[dict]) -> list[dict]:
                 "paper_model_id": case["paper_model_id"],
                 "dataset_spec": case["dataset_spec"],
                 "repeat_count": case["repeat_count"],
-                "status": "error" if case["oom_or_runtime_error_any"] else "ok",
+                "total_repeat_count": case["total_repeat_count"],
+                "valid_repeat_count": case["valid_repeat_count"],
+                "failed_repeat_count": case["failed_repeat_count"],
+                "status": "ok" if case["feasible"] else "error",
+                "had_failed_attempt": bool(case["oom_or_runtime_error_any"]),
             }
         )
     return rows

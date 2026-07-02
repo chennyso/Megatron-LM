@@ -18,8 +18,13 @@ def main() -> int:
     analysis_dir = Path(args.analysis_dir)
     fig_dir = analysis_dir / "figures"
     df = pd.read_csv(analysis_dir / "figure_data" / "fig2_baselines.csv")
-    df = df.sort_values(["paper_model_id", "tokens_per_second_mean_mean"], ascending=[True, False]).reset_index(drop=True)
-    colors = [COLORS[hash(model_id) % len(COLORS)] for model_id in df["paper_model_id"]]
+    df = df.sort_values(
+        ["paper_model_id", "feasible", "tokens_per_second_mean_mean"],
+        ascending=[True, False, False],
+        na_position="last",
+    ).reset_index(drop=True)
+    model_ids = {model_id: idx for idx, model_id in enumerate(sorted(df["paper_model_id"].dropna().unique()))}
+    colors = [COLORS[model_ids.get(model_id, 0) % len(COLORS)] for model_id in df["paper_model_id"]]
 
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.2))
 
@@ -69,7 +74,7 @@ def main() -> int:
     panel_label(ax, "(c)")
 
     ax = axes[1, 1]
-    status = (~df["oom_or_runtime_error_any"]).astype(int)
+    status = df["feasible"].astype(int)
     ax.bar(df["paper_label"], status, color=colors)
     ax.set_ylim(0, 1.15)
     ax.set_yticks([0, 1])
