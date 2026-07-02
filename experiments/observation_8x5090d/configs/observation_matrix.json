@@ -178,6 +178,49 @@
         "--recompute-activations"
       ]
     },
+    "qwen3_14b_tied_rescue": {
+      "paper_name": "Qwen3-14B Tied Rescue",
+      "tokenizer_model": "/models/qwen3-14B",
+      "parameter_count_billion": 14.0,
+      "num_layers": 40,
+      "hidden_size": 5120,
+      "ffn_hidden_size": 17408,
+      "num_attention_heads": 40,
+      "num_query_groups": 8,
+      "kv_channels": 128,
+      "seq_length": 4096,
+      "max_position_embeddings": 40960,
+      "vocab_size": 151936,
+      "make_vocab_size_divisible_by": 128,
+      "common_flags": [
+        "--use-mcore-models",
+        "--attention-backend",
+        "flash",
+        "--transformer-impl",
+        "transformer_engine",
+        "--group-query-attention",
+        "--bf16",
+        "--normalization",
+        "RMSNorm",
+        "--norm-epsilon",
+        "1e-6",
+        "--position-embedding-type",
+        "rope",
+        "--rotary-base",
+        "1000000",
+        "--rotary-percent",
+        "1.0",
+        "--use-rotary-position-embeddings",
+        "--qk-layernorm",
+        "--swiglu",
+        "--disable-bias-linear",
+        "--attention-dropout",
+        "0.0",
+        "--hidden-dropout",
+        "0.0",
+        "--recompute-activations"
+      ]
+    },
     "qwen3_30b_a3b_moe": {
       "paper_name": "Qwen3-30B-A3B MoE",
       "tokenizer_model": "/models/qwen3-30B-A3B",
@@ -1133,6 +1176,61 @@
         "tp_tradeoff",
         "pp_scaling",
         "optimizer_precision"
+      ],
+      "pipeline_model_parallel_layout": "Et*9|t*11|t*10|t*10L",
+      "seq_length_override": 512,
+      "overlap_p2p_comm": false,
+      "extra_flags": [
+        "--use-distributed-optimizer",
+        "--use-precision-aware-optimizer",
+        "--main-params-dtype",
+        "fp16",
+        "--main-grads-dtype",
+        "bf16",
+        "--exp-avg-dtype",
+        "fp16",
+        "--exp-avg-sq-dtype",
+        "fp16",
+        "--ckpt-format",
+        "torch_dist"
+      ]
+    },
+    {
+      "id": "qwen14b_tp2_pp4_tied_pao_s512_gb1",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B TP2+PP4 Tied-Emb PAO S512 GB1",
+      "phase": "baseline",
+      "model": "qwen3_14b_tied_rescue",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 2,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 1
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2079
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "feasibility_boundary",
+        "tp_tradeoff",
+        "pp_scaling",
+        "optimizer_precision",
+        "embedding_tying"
       ],
       "pipeline_model_parallel_layout": "Et*9|t*11|t*10|t*10L",
       "seq_length_override": 512,
