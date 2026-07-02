@@ -407,6 +407,46 @@
       "overlap_p2p_comm": false
     },
     {
+      "id": "qwen8b_fsdp_only",
+      "paper_model_id": "qwen3-8b",
+      "paper_label": "8B FSDP-only",
+      "phase": "baseline",
+      "model": "qwen3_8b_dense_proxy",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 1,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 1790
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "available_dense_baseline",
+        "fsdp_comparison"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "overlap_p2p_comm": false
+    },
+    {
       "id": "qwen8b_pp2_fsdp",
       "paper_model_id": "qwen3-8b",
       "paper_label": "8B PP2+FSDP",
