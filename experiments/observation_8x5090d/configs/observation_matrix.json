@@ -460,7 +460,7 @@
       },
       "runtime": {
         "micro_batch_size": 1,
-        "global_batch_size": 8
+        "global_batch_size": 4
       },
       "repeat_policy": {
         "independent_runs": 3,
@@ -500,7 +500,7 @@
       },
       "runtime": {
         "micro_batch_size": 1,
-        "global_batch_size": 8
+        "global_batch_size": 4
       },
       "repeat_policy": {
         "independent_runs": 3,
