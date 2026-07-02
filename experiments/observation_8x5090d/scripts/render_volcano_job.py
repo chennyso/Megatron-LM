@@ -54,6 +54,8 @@ def render(args: argparse.Namespace) -> str:
         "__MEM_REQUEST__": args.mem_request,
         "__MEM_LIMIT__": args.mem_limit,
         "__SHM_SIZE__": args.shm_size,
+        "__OBS_REPEAT_COUNT_OVERRIDE__": args.obs_repeat_count_override or "",
+        "__OBS_SEED_BASE_OVERRIDE__": args.obs_seed_base_override or "",
     }
     rendered = TEMPLATE_PATH.read_text(encoding="utf-8")
     for old, new in replacements.items():
@@ -78,6 +80,8 @@ def main() -> int:
     parser.add_argument("--mem-request", default="160Gi")
     parser.add_argument("--mem-limit", default="240Gi")
     parser.add_argument("--shm-size", default="128Gi")
+    parser.add_argument("--obs-repeat-count-override")
+    parser.add_argument("--obs-seed-base-override")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 

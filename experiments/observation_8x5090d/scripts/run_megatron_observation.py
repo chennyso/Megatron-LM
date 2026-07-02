@@ -231,8 +231,8 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
     dataset_cfg = matrix["datasets"][case["dataset_spec"]]
     parallelism = case["parallelism"]
     runtime = case["runtime"]
-    repeat_count = case["repeat_policy"]["independent_runs"]
-    seed_base = case["repeat_policy"].get("seed_base", 1234)
+    repeat_count = int(os.environ.get("OBS_REPEAT_COUNT_OVERRIDE") or case["repeat_policy"]["independent_runs"])
+    seed_base = int(os.environ.get("OBS_SEED_BASE_OVERRIDE") or case["repeat_policy"].get("seed_base", 1234))
     warmup_steps = case["warmup_steps"]
     measure_steps = case["measure_steps"]
     train_iters = runtime.get("train_iters", warmup_steps + measure_steps)

@@ -71,6 +71,10 @@ spec:
             value: /workspace/code/Megatron-LM-observation
           - name: RESULT_ROOT
             value: /workspace/runs/observation_8x5090d/__RUN_ID__
+          - name: OBS_REPEAT_COUNT_OVERRIDE
+            value: "__OBS_REPEAT_COUNT_OVERRIDE__"
+          - name: OBS_SEED_BASE_OVERRIDE
+            value: "__OBS_SEED_BASE_OVERRIDE__"
           resources:
             requests:
               nvidia.com/gpu: "8"
