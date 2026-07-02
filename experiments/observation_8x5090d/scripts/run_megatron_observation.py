@@ -227,7 +227,11 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
     case_dir.mkdir(parents=True, exist_ok=True)
     (case_dir / "case_config.json").write_text(json.dumps(case, indent=2), encoding="utf-8")
 
-    model_cfg = matrix["models"][case["model"]]
+    model_cfg = dict(matrix["models"][case["model"]])
+    if case.get("seq_length_override") is not None:
+        model_cfg["seq_length"] = case["seq_length_override"]
+    if case.get("max_position_embeddings_override") is not None:
+        model_cfg["max_position_embeddings"] = case["max_position_embeddings_override"]
     dataset_cfg = matrix["datasets"][case["dataset_spec"]]
     parallelism = case["parallelism"]
     runtime = case["runtime"]
