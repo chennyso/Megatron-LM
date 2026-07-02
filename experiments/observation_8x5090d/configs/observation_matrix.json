@@ -1001,6 +1001,48 @@
       "overlap_p2p_comm": false
     },
     {
+      "id": "qwen14b_pp4_nonuniform_c_s2048",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP4 non-uniform C S2048",
+      "phase": "baseline",
+      "model": "qwen3_14b",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 4,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 8
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2080
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "nonuniform_partition",
+        "tp_tradeoff"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "pipeline_model_parallel_layout": "Et*9|t*11|t*10|t*10L",
+      "seq_length_override": 2048,
+      "overlap_p2p_comm": false
+    },
+    {
       "id": "qwen30b_pp1_ep2_dp4",
       "paper_model_id": "qwen3-30b-a3b",
       "paper_label": "30B PP1 EP2 DP4",
