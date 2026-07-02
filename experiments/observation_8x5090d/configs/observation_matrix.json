@@ -524,7 +524,7 @@
         "sharding_strategy": "optim_grads_params"
       },
       "layers_per_virtual_stage": 9,
-      "overlap_p2p_comm": false
+      "overlap_p2p_comm": true
     },
     {
       "id": "qwen14b_pp2_fsdp",
