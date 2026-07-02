@@ -394,7 +394,7 @@ def core_transformer_config_from_yaml(args, transfomer_key = "language_model"):
     kw_args = core_config_from_args(args, TransformerConfig)    
     
     # Hardcoded 
-    kw_args['deallocate_pipeline_outputs'] = True
+    kw_args['deallocate_pipeline_outputs'] = os.environ.get("OBS_DISABLE_PIPELINE_DEALLOCATE") != "1"
     kw_args['pipeline_dtype'] = kw_args['params_dtype']
     kw_args['batch_p2p_comm'] = not args.overlap_p2p_comm 
     
@@ -438,4 +438,3 @@ def load_yaml(yaml_path):
             getattr(config_namespace, "global_batch_size", None) is not None
         )
         return config_namespace
-

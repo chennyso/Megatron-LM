@@ -10,6 +10,7 @@ import itertools
 import builtins
 import ast
 import enum
+import os
 from dataclasses import Field, fields
 import warnings
 import torch.nn.functional as F
@@ -297,7 +298,7 @@ def core_transformer_config_from_args(args, config_class=None):
         if hasattr(args, f.name):
             kw_args[f.name] = getattr(args, f.name)
     kw_args['persist_layer_norm'] = not args.no_persist_layer_norm
-    kw_args['deallocate_pipeline_outputs'] = True
+    kw_args['deallocate_pipeline_outputs'] = os.environ.get("OBS_DISABLE_PIPELINE_DEALLOCATE") != "1"
     kw_args['pipeline_dtype'] = args.params_dtype
     kw_args['batch_p2p_comm'] = not args.overlap_p2p_comm
     kw_args['num_moe_experts'] = args.num_experts
