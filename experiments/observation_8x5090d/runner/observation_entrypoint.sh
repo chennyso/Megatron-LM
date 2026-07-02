@@ -29,6 +29,42 @@ nvidia-smi || true
 
 MATRIX_PATH="experiments/observation_8x5090d/configs/observation_matrix.json"
 
+if [ "${PHASE}" != "hardware" ]; then
+  DATASET_SPEC_ID="$(
+    "${OBS_PYTHON}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+matrix = json.loads(Path("experiments/observation_8x5090d/configs/observation_matrix.json").read_text(encoding="utf-8"))
+phase = os.environ["PHASE"]
+case_id = os.environ.get("CASE_ID") or ""
+for case in matrix["cases"]:
+    if case["phase"] != phase:
+        continue
+    if case_id and case["id"] != case_id:
+        continue
+    print(case["dataset_spec"])
+    raise SystemExit(0)
+raise SystemExit(f"Could not resolve dataset spec for phase={phase!r} case_id={case_id!r}")
+PY
+  )"
+  export DATASET_SPEC_ID
+  "${OBS_PYTHON}" experiments/observation_8x5090d/scripts/prepare_observation_dataset.py \
+    --matrix-path "${MATRIX_PATH}" \
+    --dataset-spec-id "${DATASET_SPEC_ID}" \
+    --output-root "/workspace/datasets/$( \
+      "${OBS_PYTHON}" - <<'PY'
+import json
+from pathlib import Path
+
+matrix = json.loads(Path("experiments/observation_8x5090d/configs/observation_matrix.json").read_text(encoding="utf-8"))
+dataset = matrix["datasets"][__import__("os").environ["DATASET_SPEC_ID"]]
+print(Path(dataset["data_path"]).parent.relative_to("/workspace/datasets"))
+PY
+    )"
+fi
+
 if [ "${PHASE}" = "hardware" ]; then
   "${OBS_PYTHON}" experiments/observation_8x5090d/scripts/run_hardware_profile.py \
     --matrix-path "${MATRIX_PATH}" \

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,14 @@ PREPROCESS_SCRIPT = REPO_ROOT / "tools" / "preprocess_data.py"
 
 def load_matrix(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def preprocess_output_prefix(data_path: Path) -> Path:
+    suffix = "_text_document"
+    data_path_text = str(data_path)
+    if data_path_text.endswith(suffix):
+        return Path(data_path_text[: -len(suffix)])
+    return data_path
 
 
 def load_fineweb_docs_via_mirror(dataset_cfg: dict, limit_docs: int, output_root: Path) -> tuple[int, dict]:
@@ -104,14 +113,31 @@ def main() -> int:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     raw_jsonl = output_root / "raw.jsonl"
-    output_prefix = output_root / output_root.name
+    data_path = Path(dataset_cfg["data_path"])
+    output_prefix = preprocess_output_prefix(data_path)
     limit_docs = args.limit_docs or dataset_cfg.get("document_count", 50000)
 
-    if raw_jsonl.exists() and not args.overwrite:
-        raise SystemExit(f"{raw_jsonl} already exists. Pass --overwrite to rebuild.")
+    idx_path = Path(f"{data_path}.idx")
+    bin_path = Path(f"{data_path}.bin")
+    if idx_path.exists() and bin_path.exists() and not args.overwrite:
+        manifest = {
+            "dataset_spec_id": args.dataset_spec_id,
+            "hf_dataset": dataset_cfg["hf_dataset"],
+            "revision": dataset_cfg.get("revision"),
+            "document_count": dataset_cfg.get("document_count", limit_docs),
+            "raw_jsonl": str(raw_jsonl) if raw_jsonl.exists() else None,
+            "data_path": str(data_path),
+            "preprocess_output_prefix": str(output_prefix),
+            "tokenizer_model": dataset_cfg.get("tokenizer_model"),
+            "already_preprocessed": True,
+        }
+        (output_root / "dataset_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return 0
 
     manifest_extra: dict[str, object] = {}
-    if dataset_cfg.get("hf_transport") == "mirror_api":
+    if raw_jsonl.exists() and not args.overwrite:
+        selected_count = dataset_cfg.get("document_count", limit_docs)
+    elif dataset_cfg.get("hf_transport") == "mirror_api":
         selected_count, manifest_extra = load_fineweb_docs_via_mirror(dataset_cfg, limit_docs, output_root)
     else:
         ds = load_dataset(dataset_cfg["hf_dataset"], revision=dataset_cfg.get("revision"), split="train")
@@ -127,8 +153,9 @@ def main() -> int:
         if model.get("tokenizer_model")
     )
 
+    obs_python = os.environ.get("OBS_PYTHON", "python3")
     cmd = [
-        "python3",
+        obs_python,
         str(PREPROCESS_SCRIPT),
         "--input",
         str(raw_jsonl),
@@ -140,7 +167,7 @@ def main() -> int:
         tokenizer_model,
         "--append-eod",
         "--workers",
-        str(args.workers),
+        "1",
     ]
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
 
@@ -150,7 +177,8 @@ def main() -> int:
         "revision": dataset_cfg.get("revision"),
         "document_count": selected_count,
         "raw_jsonl": str(raw_jsonl),
-        "output_prefix": str(output_prefix),
+        "data_path": str(data_path),
+        "preprocess_output_prefix": str(output_prefix),
         "tokenizer_model": tokenizer_model,
     }
     manifest.update(manifest_extra)
