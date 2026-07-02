@@ -724,6 +724,48 @@
       "overlap_p2p_comm": false
     },
     {
+      "id": "qwen14b_pp2_fsdp_s2048",
+      "paper_model_id": "qwen3-14b",
+      "paper_label": "14B PP2+FSDP S2048",
+      "phase": "baseline",
+      "model": "qwen3_14b",
+      "dataset_spec": "formal_public_fineweb_edu_v1",
+      "parallelism": {
+        "tp": 1,
+        "pp": 2,
+        "ep": 1,
+        "vp": 1
+      },
+      "runtime": {
+        "micro_batch_size": 1,
+        "global_batch_size": 16
+      },
+      "repeat_policy": {
+        "independent_runs": 3,
+        "seed_base": 2090
+      },
+      "warmup_steps": 20,
+      "measure_steps": 40,
+      "profiler_policy": {
+        "nsys": false
+      },
+      "figure_membership": [
+        "fig2",
+        "fig3"
+      ],
+      "claim_membership": [
+        "baseline_throughput",
+        "pp_fsdp_tradeoff",
+        "seq_length_feasibility"
+      ],
+      "fsdp": {
+        "enabled": true,
+        "sharding_strategy": "optim_grads_params"
+      },
+      "seq_length_override": 2048,
+      "overlap_p2p_comm": false
+    },
+    {
       "id": "qwen14b_pp4_fsdp",
       "paper_model_id": "qwen3-14b",
       "paper_label": "14B PP4+FSDP",
