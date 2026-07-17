@@ -69,6 +69,7 @@ def render(args: argparse.Namespace) -> str:
         "__SRIOV_NETWORK_ANNOTATION__": sriov_network_annotation,
         "__MLNXNICS_QUANTITY__": mlnxnics_quantity,
         "__NCCL_IB_DISABLE__": nccl_ib_disable,
+        "__NCCL_P2P_DISABLE__": args.nccl_p2p_disable,
     }
     rendered = TEMPLATE_PATH.read_text(encoding="utf-8")
     for old, new in replacements.items():
@@ -99,6 +100,12 @@ def main() -> int:
     parser.add_argument("--mem-limit", default="240Gi")
     parser.add_argument("--shm-size", default="128Gi")
     parser.add_argument("--disable-sriov-ib-network", action="store_true")
+    parser.add_argument(
+        "--nccl-p2p-disable",
+        choices=["0", "1"],
+        default="1",
+        help="Explicitly select the intra-node NCCL P2P path for matched baselines.",
+    )
     parser.add_argument("--obs-repeat-count-override")
     parser.add_argument("--obs-seed-base-override")
     parser.add_argument("--apply", action="store_true")

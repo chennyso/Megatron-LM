@@ -30,7 +30,7 @@ spec:
           args:
           - |
             set -euo pipefail
-            export NCCL_P2P_DISABLE=1
+            export NCCL_P2P_DISABLE=__NCCL_P2P_DISABLE__
             export NCCL_IB_DISABLE=__NCCL_IB_DISABLE__
             export NCCL_NET_GDR_LEVEL=5
             export NCCL_IB_GID_INDEX=0

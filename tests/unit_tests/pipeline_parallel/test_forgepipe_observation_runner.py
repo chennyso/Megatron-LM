@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _load_runner():
@@ -74,3 +75,43 @@ def test_failure_classifier_marks_non_oom_early_exit():
         "Traceback: unexpected failure", return_code=1, completed_steps=0, expected_steps=8
     )
     assert result["classes"] == ["incomplete_progress", "runtime_exception"]
+
+
+def test_renderer_records_explicit_nccl_p2p_path():
+    repo_root = Path(__file__).resolve().parents[3]
+    renderer_path = (
+        repo_root
+        / "experiments"
+        / "observation_8x5090d"
+        / "scripts"
+        / "render_volcano_job.py"
+    )
+    spec = importlib.util.spec_from_file_location("forgepipe_renderer", renderer_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    args = SimpleNamespace(
+        disable_sriov_ib_network=False,
+        nccl_p2p_disable="0",
+        job_name="dry-run",
+        node="g5",
+        image="image",
+        gpu_resource_name="nvidia.com/gpu",
+        phase="proxy",
+        run_id="run",
+        case_id="case",
+        matrix_path="matrix.json",
+        git_remote_url="remote",
+        git_branch="branch",
+        workspace_pvc="workspace",
+        model_pvc="models",
+        cpu_request="1",
+        cpu_limit="2",
+        mem_request="1Gi",
+        mem_limit="2Gi",
+        shm_size="1Gi",
+        obs_repeat_count_override=None,
+        obs_seed_base_override=None,
+    )
+    assert "export NCCL_P2P_DISABLE=0" in module.render(args)
