@@ -1,0 +1,216 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: forgepipe-r102a-20260718-svc
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    app: forgepipe-r102a-20260718
+  ports:
+  - name: torch
+    port: 29619
+    targetPort: 29619
+---
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: forgepipe-r102a-20260718
+  namespace: default
+  labels:
+    app: forgepipe-r102a-20260718
+spec:
+  minAvailable: 2
+  queue: default
+  schedulerName: volcano
+  tasks:
+  - name: worker-g5
+    replicas: 1
+    template:
+      metadata:
+        labels:
+          app: forgepipe-r102a-20260718
+        annotations:
+          k8s.v1.cni.cncf.io/networks: sriov-ib-network
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: g5
+        tolerations: &tolerations
+        - key: bbt.sspu.edu.cn/stage0-excluded
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        restartPolicy: Never
+        containers:
+        - name: validator
+          image: harbor.bbt.sspu.edu.cn/nvcr/nvidia/pytorch:26.05-py3
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args: ["/opt/forgepipe/run.sh"]
+          env: &env
+          - name: SERVICE_NAME
+            value: forgepipe-r102a-20260718-svc
+          - name: WORLD_NODES
+            value: "2"
+          - name: MASTER_PORT
+            value: "29619"
+          - name: RUN_ID
+            value: forgepipe-r102a-20260718
+          - name: GIT_BRANCH
+            value: codex/forgepipe-pilot-20260717
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          resources: &resources
+            requests:
+              cpu: "8"
+              memory: 24Gi
+              nvidia.com/gpu: "1"
+              nvidia.com/mlnxnics: "1"
+            limits:
+              cpu: "16"
+              memory: 48Gi
+              nvidia.com/gpu: "1"
+              nvidia.com/mlnxnics: "1"
+          securityContext: &security
+            capabilities:
+              add: ["IPC_LOCK"]
+          volumeMounts: &mounts
+          - name: workspace
+            mountPath: /workspace
+          - name: runner
+            mountPath: /opt/forgepipe
+          - name: dev-infiniband
+            mountPath: /dev/infiniband
+          - name: dshm
+            mountPath: /dev/shm
+        volumes: &volumes
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: seampipe-paper-workspace
+        - name: runner
+          configMap:
+            name: forgepipe-r102a-runner-20260718
+            defaultMode: 0755
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband
+            type: DirectoryOrCreate
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+  - name: worker-g6
+    replicas: 1
+    template:
+      metadata:
+        labels:
+          app: forgepipe-r102a-20260718
+        annotations:
+          k8s.v1.cni.cncf.io/networks: sriov-ib-network
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: g6
+        tolerations: *tolerations
+        restartPolicy: Never
+        containers:
+        - name: validator
+          image: harbor.bbt.sspu.edu.cn/nvcr/nvidia/pytorch:26.05-py3
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args: ["/opt/forgepipe/run.sh"]
+          env: *env
+          resources: *resources
+          securityContext: *security
+          volumeMounts: *mounts
+        volumes: *volumes
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgepipe-r102a-runner-20260718
+  namespace: default
+data:
+  run.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    OUT_DIR="/workspace/results/${RUN_ID}"
+    REPO_DIR="/workspace/code/Megatron-LM-${RUN_ID}-$(hostname)"
+    mkdir -p "$OUT_DIR" /workspace/code
+    exec > >(tee -a "$OUT_DIR/launcher-$(hostname).log") 2>&1
+
+    echo "FORGEPIPE_NODE hostname=$(hostname) node=${NODE_NAME:-unknown} date=$(date -Iseconds)"
+    nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader
+    ip -br address show || true
+    ibv_devinfo || true
+
+    IB_IF=""
+    for candidate in net1 net2 net3; do
+      if [ -d "/sys/class/net/$candidate" ]; then
+        IB_IF="$candidate"
+        break
+      fi
+    done
+    test -n "$IB_IF"
+    RDMA_DEV=$(ls "/sys/class/net/$IB_IF/device/infiniband" | head -1)
+    test -n "$RDMA_DEV"
+    echo "FORGEPIPE_IB_ROUTE interface=$IB_IF hca=$RDMA_DEV"
+
+    export NCCL_DEBUG=INFO
+    export NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH
+    export NCCL_IB_DISABLE=0
+    export NCCL_IB_HCA="$RDMA_DEV"
+    export NCCL_IB_GID_INDEX=0
+    export NCCL_IB_TC=136
+    export NCCL_IB_TIMEOUT=22
+    export NCCL_IB_QPS_PER_CONNECTION=4
+    export NCCL_NET_GDR_LEVEL=5
+    export NCCL_SOCKET_IFNAME="$IB_IF"
+    export CUDA_DEVICE_MAX_CONNECTIONS=1
+    export PYTHONUNBUFFERED=1
+
+    if [ ! -d "$REPO_DIR/.git" ]; then
+      GIT_SSL_NO_VERIFY=1 git clone --branch "$GIT_BRANCH" --single-branch \
+        https://github.com/chennyso/Megatron-LM.git "$REPO_DIR"
+    fi
+    cd "$REPO_DIR"
+    GIT_SSL_NO_VERIFY=1 git fetch origin "$GIT_BRANCH"
+    git checkout --detach FETCH_HEAD
+    COMMIT=$(git rev-parse HEAD)
+    echo "FORGEPIPE_COMMIT $COMMIT"
+
+    PEERS=""
+    for _ in $(seq 1 60); do
+      PEERS=$(getent hosts "$SERVICE_NAME" 2>/dev/null | awk '{print $1}' | sort -u) || true
+      if [ "$(printf '%s\n' "$PEERS" | sed '/^$/d' | wc -l)" -ge "$WORLD_NODES" ]; then
+        break
+      fi
+      sleep 5
+    done
+    test "$(printf '%s\n' "$PEERS" | sed '/^$/d' | wc -l)" -ge "$WORLD_NODES"
+
+    MY_IP=$(hostname -I | awk '{print $1}')
+    MASTER_ADDR=$(printf '%s\n' "$PEERS" | head -1)
+    NODE_RANK=0
+    for peer in $PEERS; do
+      [ "$peer" = "$MY_IP" ] && break
+      NODE_RANK=$((NODE_RANK + 1))
+    done
+    echo "FORGEPIPE_RENDEZVOUS my_ip=$MY_IP master=$MASTER_ADDR node_rank=$NODE_RANK peers=$PEERS"
+
+    PROFILE_OUT="$OUT_DIR/nsys-$(hostname)"
+    exec timeout 300 nsys profile \
+      --trace=cuda,nvtx,osrt \
+      --sample=none \
+      --cpuctxsw=none \
+      --force-overwrite=true \
+      --output="$PROFILE_OUT" \
+      torchrun \
+        --nnodes="$WORLD_NODES" \
+        --nproc-per-node=1 \
+        --node-rank="$NODE_RANK" \
+        --master-addr="$MASTER_ADDR" \
+        --master-port="$MASTER_PORT" \
+        experiments/bbt_16gpu/scripts/validate_folded_route_autograd.py
