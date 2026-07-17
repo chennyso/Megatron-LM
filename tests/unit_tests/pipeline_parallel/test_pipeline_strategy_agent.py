@@ -302,6 +302,21 @@ def test_effective_overlap_classifies_useful_harmful_and_fake():
     assert report.harmful_overlap_ratio == 1.0
 
 
+def test_effective_overlap_does_not_cross_gpu_ranks():
+    module = _load_effective_overlap()
+    events = [
+        module.TimelineEvent("gemm", "compute", 0.0, 10.0, rank=1),
+        module.TimelineEvent("p2p_recv", "comm", 2.0, 8.0, rank=0),
+    ]
+
+    report = module.classify_effective_overlap(events)
+
+    assert report.useful_overlap_ms == 0.0
+    assert report.harmful_overlap_ms == 0.0
+    assert report.fake_overlap_ms == 6.0
+    assert report.hidden_comm_ratio == 0.0
+
+
 def test_bcp_ready_runtime_runs_local_bubble_fill_work():
     module = _load_strategy_runtime()
     calls = []

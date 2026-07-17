@@ -13,6 +13,8 @@ can be joined with BCP-VPP candidate reports.
 from __future__ import annotations
 
 import argparse
+import bisect
+import heapq
 import json
 import sqlite3
 from dataclasses import asdict, dataclass
@@ -232,7 +234,7 @@ def load_nsys_sqlite(path: str) -> List[TimelineEvent]:
             kind_hint = table.lower()
             if "kernel" in kind_hint:
                 default_kind = "compute"
-            elif "memcpy" in kind_hint or "nccl" in kind_hint or "runtime" in kind_hint:
+            elif "memcpy" in kind_hint or "nccl" in kind_hint:
                 default_kind = "comm"
             else:
                 default_kind = "other"
@@ -280,12 +282,58 @@ def _overlap_ms(left: TimelineEvent, right: TimelineEvent) -> float:
     return max(0.0, min(left.end_ms, right.end_ms) - max(left.start_ms, right.start_ms))
 
 
+class _IntervalIndex:
+    def __init__(self, events: Iterable[TimelineEvent]):
+        self.events = sorted(events, key=lambda event: event.start_ms)
+        self.starts = [event.start_ms for event in self.events]
+        self.prefix_max_end: List[float] = []
+        max_end = float("-inf")
+        for event in self.events:
+            max_end = max(max_end, event.end_ms)
+            self.prefix_max_end.append(max_end)
+
+    def overlapping(self, event: TimelineEvent) -> Iterable[TimelineEvent]:
+        index = bisect.bisect_left(self.starts, event.end_ms) - 1
+        while index >= 0 and self.prefix_max_end[index] > event.start_ms:
+            candidate = self.events[index]
+            if candidate.end_ms > event.start_ms:
+                yield candidate
+            index -= 1
+
+
+def _rank_indexes(events: Iterable[TimelineEvent]) -> tuple[_IntervalIndex, dict[int | None, _IntervalIndex]]:
+    event_list = list(events)
+    by_rank: dict[int | None, List[TimelineEvent]] = {}
+    for event in event_list:
+        by_rank.setdefault(event.rank, []).append(event)
+    return _IntervalIndex(event_list), {
+        rank: _IntervalIndex(rank_events) for rank, rank_events in by_rank.items()
+    }
+
+
+def _matching_events(
+    event: TimelineEvent,
+    all_events: _IntervalIndex,
+    events_by_rank: dict[int | None, _IntervalIndex],
+) -> Iterable[TimelineEvent]:
+    if event.rank is None:
+        yield from all_events.overlapping(event)
+        return
+    exact = events_by_rank.get(event.rank)
+    if exact is not None:
+        yield from exact.overlapping(event)
+    unknown = events_by_rank.get(None)
+    if unknown is not None:
+        yield from unknown.overlapping(event)
+
+
 def _median_solo_compute(events: List[TimelineEvent]) -> dict[str, float]:
     compute = [event for event in events if event.kind == "compute"]
     comm = [event for event in events if event.kind == "comm"]
+    all_comm, comm_by_rank = _rank_indexes(comm)
     solo_by_name: dict[str, List[float]] = {}
     for compute_event in compute:
-        if any(_overlap_ms(compute_event, comm_event) > 0 for comm_event in comm):
+        if any(_matching_events(compute_event, all_comm, comm_by_rank)):
             continue
         solo_by_name.setdefault(compute_event.name, []).append(compute_event.duration_ms)
     return {name: median(values) for name, values in solo_by_name.items() if values}
@@ -309,11 +357,13 @@ def classify_effective_overlap(
     useful = 0.0
     harmful = 0.0
     fake = 0.0
-    pairs: List[OverlapPair] = []
+    all_compute, compute_by_rank = _rank_indexes(compute)
+    top_pair_heap: list[tuple[float, int, OverlapPair]] = []
+    pair_sequence = 0
     for comm_event in comm:
         comm_overlap = 0.0
         comm_harmful = 0.0
-        for compute_event in compute:
+        for compute_event in _matching_events(comm_event, all_compute, compute_by_rank):
             overlap = _overlap_ms(comm_event, compute_event)
             if overlap <= 0:
                 continue
@@ -327,18 +377,23 @@ def classify_effective_overlap(
                 category = "harmful"
                 comm_harmful += overlap
             comm_overlap += overlap
-            pairs.append(
-                OverlapPair(
-                    comm_name=comm_event.name,
-                    compute_name=compute_event.name,
-                    overlap_ms=overlap,
-                    comm_duration_ms=comm_event.duration_ms,
-                    compute_duration_ms=compute_event.duration_ms,
-                    compute_slowdown=slowdown,
-                    category=category,
-                    rank=comm_event.rank if comm_event.rank is not None else compute_event.rank,
-                )
+            pair = OverlapPair(
+                comm_name=comm_event.name,
+                compute_name=compute_event.name,
+                overlap_ms=overlap,
+                comm_duration_ms=comm_event.duration_ms,
+                compute_duration_ms=compute_event.duration_ms,
+                compute_slowdown=slowdown,
+                category=category,
+                rank=comm_event.rank if comm_event.rank is not None else compute_event.rank,
             )
+            if max_pairs > 0:
+                heap_entry = (overlap, pair_sequence, pair)
+                pair_sequence += 1
+                if len(top_pair_heap) < max_pairs:
+                    heapq.heappush(top_pair_heap, heap_entry)
+                elif overlap > top_pair_heap[0][0]:
+                    heapq.heapreplace(top_pair_heap, heap_entry)
         covered = min(comm_event.duration_ms, comm_overlap)
         harmful_part = min(covered, comm_harmful)
         useful += max(0.0, covered - harmful_part)
@@ -347,7 +402,7 @@ def classify_effective_overlap(
 
     exposed_wait = sum(max(0.0, event.wait_ms) for event in comm)
     comm_ms = sum(event.duration_ms for event in comm)
-    pairs = sorted(pairs, key=lambda item: item.overlap_ms, reverse=True)[:max_pairs]
+    pairs = [entry[2] for entry in sorted(top_pair_heap, reverse=True)]
     return EffectiveOverlapReport(
         span_ms=span_ms,
         compute_ms=sum(event.duration_ms for event in compute),
@@ -392,6 +447,8 @@ def main() -> None:
         "sources": sorted({event.source for event in events if event.source}),
         "method": {
             "harmful_slowdown_threshold": args.harmful_slowdown_threshold,
+            "rank_scope": "overlap requires matching rank/device when both are known",
+            "nsys_event_scope": "GPU kernels and memcpy activity; CUDA runtime API calls excluded",
             "classification": (
                 "useful=comm overlapped by compute without observed compute slowdown; "
                 "harmful=overlap with slower-than-solo compute; fake=comm time not covered by compute"

@@ -36,6 +36,15 @@ This is evidence for investigating P2P placement and overlap, not evidence that 
 wall time is exposed communication. Kernel residency overlaps across devices and streams;
 the paper claim must use critical-path timeline analysis.
 
+The corrected same-device interval analysis excludes CUDA runtime API calls and only
+compares communication with compute on the same GPU. It loads 21,977 GPU events (21,135
+compute and 842 communication). Of 2,485.26 ms accumulated communication residency,
+only 0.105 ms overlaps compute, giving a hidden-communication ratio of 0.0042%. The host
+strategy traces independently report 2,040.52 ms accumulated P2P wait across seven ranks
+and no same-rank F/B overlap with P2P events. These are per-device accumulated quantities,
+not wall-clock critical-path time, but they establish that the sanity schedule exposes
+nearly all PP communication rather than hiding it.
+
 The R000N summary currently includes profiled iterations in its steady-state aggregate:
 step 6 is 657.3 ms, while steps 7 and 8 rise to 2,623.7 and 8,302.8 ms during capture and
 report finalization. Therefore its reported 3,861.27 ms mean is an observer-effect artifact.
@@ -139,8 +148,8 @@ at least 5% over fully tuned Megatron with a 95% confidence interval excluding z
    runs; use VPP8 as the tuned baseline.
 2. On 8B single-node, measure uniform VPP and memory-feasible compensated boundary moves
    with identical kernels, tokens, and recompute work.
-3. Add timeline overlap analysis so accumulated NCCL residency is converted into exposed
-   P2P wait and critical-path attribution.
+3. Repeat the same-device timeline analysis on every tuned baseline and validate that
+   reduced exposed P2P residency predicts the paired wall-clock delta.
 4. Compare layout-only, schedule-only, and joint programs before enabling LLM generation.
 
 Formal R001-R006 remain blocked until eight standard physical GPU resource slots are
