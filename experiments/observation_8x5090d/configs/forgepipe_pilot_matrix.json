@@ -43,7 +43,7 @@
   "models": {
     "qwen3_0_6b": {
       "paper_name": "Qwen3-0.6B Sanity",
-      "tokenizer_model": "/models/qwen3-0.6B",
+      "tokenizer_model": "/models/qwen3-8B",
       "parameter_count_billion": 0.6,
       "num_layers": 28,
       "hidden_size": 1024,
