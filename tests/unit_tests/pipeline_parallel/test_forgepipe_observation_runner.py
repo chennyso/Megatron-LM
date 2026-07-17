@@ -1,0 +1,76 @@
+import importlib.util
+import sys
+import tempfile
+from pathlib import Path
+
+
+def _load_runner():
+    repo_root = Path(__file__).resolve().parents[3]
+    module_path = (
+        repo_root
+        / "experiments"
+        / "observation_8x5090d"
+        / "scripts"
+        / "run_megatron_observation.py"
+    )
+    spec = importlib.util.spec_from_file_location("forgepipe_observation_runner", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_summarizer():
+    repo_root = Path(__file__).resolve().parents[3]
+    script_dir = repo_root / "experiments" / "observation_8x5090d" / "scripts"
+    sys.path.insert(0, str(script_dir))
+    spec = importlib.util.spec_from_file_location(
+        "forgepipe_observation_summarizer", script_dir / "summarize_megatron_run.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_build_strategy_args_lowers_explicit_policy_and_trace():
+    module = _load_runner()
+    case = {
+        "strategy": {
+            "policy": "seam-staggered",
+            "runtime": "fixed",
+            "microbatch_group_size": 4,
+            "trace": True,
+            "profile_steps": 16,
+        }
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        args = module.build_strategy_args(case, Path(tmpdir))
+
+    assert args[args.index("--pipeline-strategy-policy") + 1] == "seam-staggered"
+    assert args[args.index("--microbatch-group-size-per-vp-stage") + 1] == "4"
+    trace_path = args[args.index("--pipeline-strategy-trace-path") + 1]
+    assert trace_path.endswith("strategy_traces/rank{rank}.json")
+
+
+def test_build_strategy_args_is_empty_without_strategy_block():
+    module = _load_runner()
+    assert module.build_strategy_args({}, Path("/tmp/unused")) == []
+
+
+def test_failure_classifier_separates_oom_from_incomplete_progress():
+    module = _load_summarizer()
+    result = module.classify_failure(
+        "RuntimeError: CUDA out of memory", return_code=1, completed_steps=2, expected_steps=8
+    )
+    assert result["classes"] == ["cuda_oom"]
+
+
+def test_failure_classifier_marks_non_oom_early_exit():
+    module = _load_summarizer()
+    result = module.classify_failure(
+        "Traceback: unexpected failure", return_code=1, completed_steps=0, expected_steps=8
+    )
+    assert result["classes"] == ["incomplete_progress", "runtime_exception"]

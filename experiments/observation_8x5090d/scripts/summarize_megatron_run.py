@@ -31,6 +31,22 @@ MEMORY_RE = re.compile(
 THROUGHPUT_RE = re.compile(r"throughput per GPU.*?:\s*([0-9.]+)", re.IGNORECASE)
 LOSS_RE = re.compile(r"lm loss value:\s*([0-9.Ee+-]+)")
 OOM_RE = re.compile(r"(out of memory|cuda error|nccl error|traceback)", re.IGNORECASE)
+FAILURE_PATTERNS = {
+    "cuda_oom": re.compile(r"(cuda out of memory|out of memory)", re.IGNORECASE),
+    "nccl_or_p2p": re.compile(
+        r"(nccl error|nccl.*(failed|abort|timeout)|remote process exited|connection closed)",
+        re.IGNORECASE,
+    ),
+    "layout_or_schedule_validation": re.compile(
+        r"(pipeline.*layout|schedule table|strategy verifier|microbatch.*group).*(assert|invalid|error|must)",
+        re.IGNORECASE,
+    ),
+    "data_or_checkpoint": re.compile(
+        r"(file not found|no such file|tokenizer|data path|checkpoint).*(error|missing|not found|no such)",
+        re.IGNORECASE,
+    ),
+    "timeout_or_deadlock": re.compile(r"(timed out|timeout|watchdog|collective operation timeout)", re.IGNORECASE),
+}
 
 
 def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
@@ -148,6 +164,22 @@ def summarize_memory(memory_rows: list[dict]) -> dict:
     }
 
 
+def classify_failure(text: str, return_code: int | None, completed_steps: int, expected_steps: int | None) -> dict:
+    classes = [name for name, pattern in FAILURE_PATTERNS.items() if pattern.search(text)]
+    if return_code not in (None, 0) and not classes:
+        classes.append("runtime_exception")
+    if expected_steps and completed_steps < expected_steps and "cuda_oom" not in classes:
+        classes.append("incomplete_progress")
+    iterations = [int(match.group("iteration")) for match in ITER_RE.finditer(text)]
+    return {
+        "classes": sorted(set(classes)),
+        "return_code": return_code,
+        "completed_steps": completed_steps,
+        "expected_steps": expected_steps,
+        "last_iteration": max(iterations) if iterations else None,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--log-path", required=True)
@@ -171,6 +203,19 @@ def main() -> int:
     losses = [float(value) for value in LOSS_RE.findall(text)]
     errors = sorted(set(match.group(0) for match in OOM_RE.finditer(text)))
     memory_summary = summarize_memory(memory_rows)
+    return_code_path = log_path.with_name("return_code.txt")
+    return_code = None
+    if return_code_path.exists():
+        try:
+            return_code = int(return_code_path.read_text(encoding="utf-8").strip())
+        except ValueError:
+            return_code = None
+    failure_diagnostics = classify_failure(
+        text,
+        return_code,
+        completed_steps=len(step_rows),
+        expected_steps=case_config.get("runtime", {}).get("train_iters"),
+    )
 
     per_step_csv = Path(args.output_path).with_name("per_step.csv")
     if step_rows:
@@ -207,6 +252,7 @@ def main() -> int:
         "dmon": dmon_summary,
         "error_markers": errors,
         "oom_or_runtime_error": bool(errors),
+        "failure_diagnostics": failure_diagnostics,
         "figure_membership": case_config.get("figure_membership", []),
         "claim_membership": case_config.get("claim_membership", []),
         "artifacts": {

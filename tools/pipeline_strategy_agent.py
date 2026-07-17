@@ -43,6 +43,8 @@ def load_events(paths: Iterable[str]) -> List[dict]:
         if not path.exists():
             raise FileNotFoundError(path)
         events.extend(_load_events_from_path(path))
+    if not events:
+        raise ValueError("trace inputs do not contain any events")
     return events
 
 
@@ -68,6 +70,7 @@ def _load_events_from_path(path: Path) -> List[dict]:
         idx = end
 
     events: List[dict] = []
+    saw_empty_sentinel = False
     for payload in payloads:
         if isinstance(payload, list):
             if not all(isinstance(item, dict) for item in payload):
@@ -81,10 +84,15 @@ def _load_events_from_path(path: Path) -> List[dict]:
                 events.extend(nested_events)
             else:
                 events.append(payload)
+        elif payload is None or isinstance(payload, bool):
+            # Some ranks emit a JSON sentinel when no trace events were recorded.
+            # Treat it as an empty shard instead of failing multi-rank synthesis.
+            saw_empty_sentinel = True
+            continue
         else:
             raise ValueError(f"{path} contains unsupported trace payload type {type(payload).__name__}")
 
-    if not events:
+    if not events and not saw_empty_sentinel:
         raise ValueError(f"{path} does not contain trace events")
     return events
 

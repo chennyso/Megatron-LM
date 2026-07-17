@@ -188,7 +188,7 @@ def export_nsys_stats(repeat_dir: Path) -> None:
     if not nsys_rep.exists():
         return
     output_prefix = repeat_dir / "nsys_stats"
-    cmd = [
+    stats_cmd = [
         "nsys",
         "stats",
         "--report",
@@ -199,16 +199,79 @@ def export_nsys_stats(repeat_dir: Path) -> None:
         str(output_prefix),
         str(nsys_rep),
     ]
-    subprocess.run(cmd, cwd=REPO_ROOT, check=False)
+    sqlite_path = repeat_dir / "nsys_profile.sqlite"
+    export_cmd = [
+        "nsys",
+        "export",
+        "--type",
+        "sqlite",
+        "--force-overwrite",
+        "true",
+        "--output",
+        str(sqlite_path),
+        str(nsys_rep),
+    ]
+    stats_result = subprocess.run(stats_cmd, cwd=REPO_ROOT, check=False)
+    export_result = subprocess.run(export_cmd, cwd=REPO_ROOT, check=False)
+    (repeat_dir / "nsys_export_status.json").write_text(
+        json.dumps(
+            {
+                "stats_return_code": stats_result.returncode,
+                "export_return_code": export_result.returncode,
+                "nsys_rep": str(nsys_rep),
+                "sqlite": str(sqlite_path) if sqlite_path.exists() else None,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def build_strategy_args(case: dict, repeat_dir: Path) -> list[str]:
+    """Lower the case strategy block to explicit Megatron arguments."""
+
+    strategy = case.get("strategy", {})
+    args: list[str] = []
+    group_size = strategy.get("microbatch_group_size")
+    if group_size is not None:
+        args.extend(["--microbatch-group-size-per-vp-stage", str(group_size)])
+
+    scalar_flags = {
+        "policy": "--pipeline-strategy-policy",
+        "runtime": "--pipeline-strategy-runtime",
+        "p2p_credit_budget": "--pipeline-strategy-p2p-credit-budget",
+        "min_fill_wait_ms": "--pipeline-strategy-min-fill-wait-ms",
+        "memory_budget_mb": "--pipeline-strategy-memory-budget-mb",
+        "agent_mode": "--pipeline-strategy-agent-mode",
+        "profile_steps": "--pipeline-strategy-profile-steps",
+    }
+    for key, flag in scalar_flags.items():
+        if strategy.get(key) is not None:
+            args.extend([flag, str(strategy[key])])
+
+    if strategy.get("plan_path"):
+        args.extend(["--pipeline-strategy-plan", str(strategy["plan_path"])])
+    if strategy.get("trace", False):
+        trace_path = repeat_dir / "strategy_traces" / "rank{rank}.json"
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        args.extend(["--pipeline-strategy-trace-path", str(trace_path)])
+    return args
 
 
 def snapshot_environment(repeat_dir: Path) -> dict:
+    nsys_version = None
+    if shutil.which("nsys"):
+        version_result = subprocess.run(
+            ["nsys", "--version"], capture_output=True, text=True, check=False
+        )
+        nsys_version = (version_result.stdout or version_result.stderr).strip()
     payload = {
         "git_commit": git_commit(),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "cwd": str(REPO_ROOT),
         "python": subprocess.run(["python3", "--version"], capture_output=True, text=True, check=False).stdout.strip(),
         "obs_python": subprocess.run([OBS_PYTHON, "--version"], capture_output=True, text=True, check=False).stdout.strip(),
+        "nsys": nsys_version,
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "nccl_env": {key: value for key, value in os.environ.items() if key.startswith("NCCL_") or key.startswith("TORCH_NCCL_")},
         "selected_env": {
@@ -348,6 +411,7 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
             cmd.extend(["--num-layers-per-virtual-pipeline-stage", str(case["layers_per_virtual_stage"])])
         if not case.get("overlap_p2p_comm", False):
             cmd.append("--no-overlap-p2p-communication")
+        cmd.extend(build_strategy_args(case, repeat_dir))
 
         fsdp = case.get("fsdp", {})
         if fsdp.get("enabled", False):
@@ -368,12 +432,15 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
         cmd.extend(case.get("extra_flags", []))
 
         if profile_cfg.get("nsys", False):
+            trace_domains = profile_cfg.get(
+                "trace_domains", ["cuda", "nvtx", "nccl", "osrt", "cublas"]
+            )
             cmd = [
                 "nsys",
                 "profile",
                 "--sample=none",
                 "--cpuctxsw=none",
-                "--trace=cuda,nvtx,cublas,cudnn",
+                "--trace=" + ",".join(trace_domains),
                 "--capture-range=cudaProfilerApi",
                 "--capture-range-end=stop",
                 "--cuda-graph-trace=node",

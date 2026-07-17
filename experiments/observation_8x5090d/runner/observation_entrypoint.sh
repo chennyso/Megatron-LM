@@ -35,7 +35,8 @@ else
   echo "[observation-env] nvidia-smi not found; skipping GPU query"
 fi
 
-MATRIX_PATH="experiments/observation_8x5090d/configs/observation_matrix.json"
+MATRIX_PATH="${MATRIX_PATH:-experiments/observation_8x5090d/configs/observation_matrix.json}"
+export MATRIX_PATH
 
 if [ "${PHASE}" != "hardware" ]; then
   DATASET_SPEC_ID="$(
@@ -44,7 +45,7 @@ import json
 import os
 from pathlib import Path
 
-matrix = json.loads(Path("experiments/observation_8x5090d/configs/observation_matrix.json").read_text(encoding="utf-8"))
+matrix = json.loads(Path(os.environ["MATRIX_PATH"]).read_text(encoding="utf-8"))
 phase = os.environ["PHASE"]
 case_id = os.environ.get("CASE_ID") or ""
 for case in matrix["cases"]:
@@ -64,9 +65,10 @@ PY
     --output-root "/workspace/datasets/$( \
       "${OBS_PYTHON}" - <<'PY'
 import json
+import os
 from pathlib import Path
 
-matrix = json.loads(Path("experiments/observation_8x5090d/configs/observation_matrix.json").read_text(encoding="utf-8"))
+matrix = json.loads(Path(os.environ["MATRIX_PATH"]).read_text(encoding="utf-8"))
 dataset = matrix["datasets"][__import__("os").environ["DATASET_SPEC_ID"]]
 print(Path(dataset["data_path"]).parent.relative_to("/workspace/datasets"))
 PY

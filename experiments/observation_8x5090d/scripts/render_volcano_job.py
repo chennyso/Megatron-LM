@@ -54,6 +54,7 @@ def render(args: argparse.Namespace) -> str:
         "__PHASE__": args.phase,
         "__RUN_ID__": args.run_id,
         "__CASE_ID__": args.case_id or "",
+        "__MATRIX_PATH__": args.matrix_path,
         "__GIT_REMOTE_URL__": args.git_remote_url,
         "__GIT_BRANCH__": args.git_branch,
         "__WORKSPACE_PVC__": args.workspace_pvc,
@@ -82,6 +83,10 @@ def main() -> int:
     parser.add_argument("--job-name", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--case-id")
+    parser.add_argument(
+        "--matrix-path",
+        default="experiments/observation_8x5090d/configs/observation_matrix.json",
+    )
     parser.add_argument("--git-branch", default=current_branch())
     parser.add_argument("--git-remote-url", default="https://github.com/chennyso/Megatron-LM.git")
     parser.add_argument("--workspace-pvc", default="seampipe-paper-workspace")

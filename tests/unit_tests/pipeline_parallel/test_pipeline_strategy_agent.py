@@ -79,6 +79,22 @@ def test_load_events_ignores_trailing_invalid_json_after_event_array():
     assert events[1]["name"] == "backward_step"
 
 
+def test_load_events_skips_empty_rank_sentinel_when_other_rank_has_events():
+    module = _load_pipeline_strategy_agent()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty_path = Path(tmpdir) / "rank0.json"
+        event_path = Path(tmpdir) / "rank1.json"
+        empty_path.write_text("null\n", encoding="utf-8")
+        event_path.write_text(
+            '[{"name": "forward_step", "pp_rank": 1, "elapsed_ms": 1.0}]',
+            encoding="utf-8",
+        )
+        events = module.load_events([str(empty_path), str(event_path)])
+
+    assert len(events) == 1
+    assert events[0]["pp_rank"] == 1
+
+
 def test_boundary_aware_layout_never_emits_empty_stage():
     module = _load_search_pipeline_strategy()
 
