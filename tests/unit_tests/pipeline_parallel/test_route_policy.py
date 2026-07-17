@@ -2,7 +2,9 @@
 
 import pytest
 
-from megatron.core.pipeline_parallel.route_policy import LogicalStage, P2PAction, PipelineRoute
+from megatron.core.pipeline_parallel.route_policy import (LogicalStage,
+                                                          P2PAction,
+                                                          PipelineRoute)
 
 
 @pytest.mark.parametrize("virtual_chunks", [1, 2, 4, 8])

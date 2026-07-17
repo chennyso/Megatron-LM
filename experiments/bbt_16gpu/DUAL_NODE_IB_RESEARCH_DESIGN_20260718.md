@@ -229,3 +229,36 @@ GraphPP, RoundPipe, RRFP, HARP, HetAuto, and Galvatron are mechanism/related-wor
 
 Current scheduling caveat: GPUs are physically idle, but g5's Mirage system components reserve five `nvidia.com/gpu` resources and g6 has a `stage0-excluded` taint. The diagnostic used an explicit taint toleration. Formal 8+8 runs remain blocked until standard physical GPU accounting exposes all eight slots per node; no paper claim should use a mixed Mirage/standard allocation without a separately approved protocol.
 
+## 11. Route Verifier Milestone (R101)
+
+Commit `591876406` introduced a pure `PipelineRoute` IR and static verifier. In
+the same PyTorch 26.05 / Python 3.12 environment used by the cluster experiments,
+15 unit tests passed. They verify route bijection, exact backward reversal,
+local chunk transitions, endpoint-correct send/receive signatures, and the
+two-node crossing formulas. The full record is in
+`ROUTE_VERIFIER_RESULTS_20260718.md`.
+
+This milestone validates the structural result, not runtime correctness or
+speed. The current Megatron interleaved schedule still assumes rank-increasing
+chunks in its first/last-stage predicates, warmup counts, receive queues, and
+fixed predecessor/successor communicator. R102 must change these assumptions as
+one coherent lowering; changing only `P2PCommunicator.next_rank/prev_rank` would
+be incorrect.
+
+## 12. 2026-07-18 Incremental Literature Audit
+
+The local corpus contains 37 full technical readings, including PithTrain,
+GraphPP, RoundPipe, HARP, HetAuto, Operator-MIP, RRFP, Galvatron, ZeroPP, and the
+2026 tabular schedule abstraction. A fresh arXiv title/abstract search ordered by
+announcement date found no July 2026 training paper that directly proposes
+folded or serpentine VPP placement. The newest broad-query July hit concerned
+latent-computation model scaling rather than pipeline training; the newest
+direct PP result remained the June 2026 one-step-gradient-delay work. A focused
+query combining `virtual pipeline`, `serpentine`, `folded`, `pipeline parallel`,
+and `VPP` returned no result.
+
+This is a negative search result, not a novelty proof. The arXiv API was
+unreachable through the command-line TLS path, so the audit used the live arXiv
+web search. Before submission, the exact route/crossing claim still requires a
+second search in DBLP, ACM Digital Library, IEEE Xplore, proceedings, patents,
+and current Megatron/TorchTitan issues and pull requests.
