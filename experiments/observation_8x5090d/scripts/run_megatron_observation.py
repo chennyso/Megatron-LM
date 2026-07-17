@@ -183,16 +183,26 @@ def build_profiler_args(case: dict) -> tuple[list[str], dict]:
     return args, profile_cfg
 
 
-def export_nsys_stats(repeat_dir: Path) -> None:
+NSYS_STATS_REPORTS = ("cuda_gpu_kern_sum", "cuda_api_sum", "nvtx_sum")
+
+
+def nsys_stats_paths(repeat_dir: Path) -> dict[str, Path]:
+    return {
+        report: repeat_dir / f"nsys_stats_{report}.csv"
+        for report in NSYS_STATS_REPORTS
+    }
+
+
+def export_nsys_stats(repeat_dir: Path) -> bool:
     nsys_rep = repeat_dir / "nsys_profile.nsys-rep"
     if not nsys_rep.exists():
-        return
+        return False
     output_prefix = repeat_dir / "nsys_stats"
     stats_cmd = [
         "nsys",
         "stats",
         "--report",
-        "gpukernsum,cudaapisum,nvtxsum",
+        ",".join(NSYS_STATS_REPORTS),
         "--format",
         "csv",
         "--output",
@@ -213,18 +223,33 @@ def export_nsys_stats(repeat_dir: Path) -> None:
     ]
     stats_result = subprocess.run(stats_cmd, cwd=REPO_ROOT, check=False)
     export_result = subprocess.run(export_cmd, cwd=REPO_ROOT, check=False)
+    stats_files = {
+        report: str(path) if path.exists() and path.stat().st_size > 0 else None
+        for report, path in nsys_stats_paths(repeat_dir).items()
+    }
+    stats_success = stats_result.returncode == 0 and all(stats_files.values())
+    export_success = (
+        export_result.returncode == 0
+        and sqlite_path.exists()
+        and sqlite_path.stat().st_size > 0
+    )
     (repeat_dir / "nsys_export_status.json").write_text(
         json.dumps(
             {
                 "stats_return_code": stats_result.returncode,
                 "export_return_code": export_result.returncode,
+                "stats_success": stats_success,
+                "export_success": export_success,
+                "nsys_export_success": stats_success and export_success,
                 "nsys_rep": str(nsys_rep),
                 "sqlite": str(sqlite_path) if sqlite_path.exists() else None,
+                "stats_files": stats_files,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
+    return stats_success and export_success
 
 
 def build_strategy_args(case: dict, repeat_dir: Path) -> list[str]:
@@ -479,8 +504,9 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
             encoding="utf-8",
         )
         (repeat_dir / "return_code.txt").write_text(f"{return_code}\n", encoding="utf-8")
+        nsys_export_success = True
         if profile_cfg.get("nsys", False):
-            export_nsys_stats(repeat_dir)
+            nsys_export_success = export_nsys_stats(repeat_dir)
 
         subprocess.run(
             [
@@ -503,6 +529,11 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
             raise RuntimeError(
                 f"Case {case['id']} repeat {repeat_index} failed with return code {return_code}; "
                 f"see {combined_path}"
+            )
+        if not nsys_export_success:
+            raise RuntimeError(
+                f"Case {case['id']} repeat {repeat_index} completed training but did not "
+                f"produce a complete Nsight export; see {repeat_dir / 'nsys_export_status.json'}"
             )
 
 

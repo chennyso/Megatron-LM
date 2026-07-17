@@ -16,12 +16,12 @@ def collect_kernel_breakdown(manifest: list[dict], case_id: str) -> dict[str, fl
         if entry["case_id"] != case_id:
             continue
         repeat_dir = Path(entry["repeat_dir"])
-        kernel_path = repeat_dir / "nsys_stats_gpukernsum.csv"
+        kernel_path = repeat_dir / "nsys_stats_cuda_gpu_kern_sum.csv"
         if not kernel_path.exists():
             continue
-        df = pd.read_csv(kernel_path, skiprows=2)
+        df = pd.read_csv(kernel_path)
         name_col = next((column for column in df.columns if "Name" in column), None)
-        time_col = next((column for column in df.columns if "Total Time" in column or "Time" in column), None)
+        time_col = next((column for column in df.columns if "Total Time" in column), None)
         if name_col is None or time_col is None:
             continue
         totals = {"nccl": 0.0, "compute": 0.0, "other": 0.0}

@@ -87,6 +87,14 @@ def test_build_profiler_args_expands_multiple_ranks():
     assert profile_cfg["profile_ranks"] == [0, 6]
 
 
+def test_nsys_stats_paths_use_current_report_names():
+    module = _load_runner()
+    paths = module.nsys_stats_paths(Path("/tmp/nsys-run"))
+
+    assert set(paths) == {"cuda_gpu_kern_sum", "cuda_api_sum", "nvtx_sum"}
+    assert paths["cuda_gpu_kern_sum"].name == "nsys_stats_cuda_gpu_kern_sum.csv"
+
+
 def test_failure_classifier_separates_oom_from_incomplete_progress():
     module = _load_summarizer()
     result = module.classify_failure(
