@@ -77,6 +77,17 @@ def test_failure_classifier_marks_non_oom_early_exit():
     assert result["classes"] == ["incomplete_progress", "runtime_exception"]
 
 
+def test_failure_classifier_ignores_warnings_after_clean_completion():
+    module = _load_summarizer()
+    result = module.classify_failure(
+        "NCCL timeout warning in printed configuration",
+        return_code=0,
+        completed_steps=8,
+        expected_steps=8,
+    )
+    assert result["classes"] == []
+
+
 def test_renderer_records_explicit_nccl_p2p_path():
     repo_root = Path(__file__).resolve().parents[3]
     renderer_path = (

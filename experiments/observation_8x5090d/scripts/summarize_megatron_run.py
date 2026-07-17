@@ -165,7 +165,12 @@ def summarize_memory(memory_rows: list[dict]) -> dict:
 
 
 def classify_failure(text: str, return_code: int | None, completed_steps: int, expected_steps: int | None) -> dict:
-    classes = [name for name, pattern in FAILURE_PATTERNS.items() if pattern.search(text)]
+    completed_cleanly = return_code == 0 and (
+        expected_steps is None or completed_steps >= expected_steps
+    )
+    classes = []
+    if not completed_cleanly:
+        classes = [name for name, pattern in FAILURE_PATTERNS.items() if pattern.search(text)]
     if return_code not in (None, 0) and not classes:
         classes.append("runtime_exception")
     if expected_steps and completed_steps < expected_steps and "cuda_oom" not in classes:
