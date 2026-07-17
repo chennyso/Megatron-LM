@@ -88,6 +88,17 @@ def test_failure_classifier_ignores_warnings_after_clean_completion():
     assert result["classes"] == []
 
 
+def test_failure_classifier_identifies_argument_lowering_error():
+    module = _load_summarizer()
+    result = module.classify_failure(
+        "pretrain_gpt.py: error: unrecognized arguments: --bad-policy 2",
+        return_code=2,
+        completed_steps=0,
+        expected_steps=6,
+    )
+    assert result["classes"] == ["argument_validation", "incomplete_progress"]
+
+
 def test_renderer_records_explicit_nccl_p2p_path():
     repo_root = Path(__file__).resolve().parents[3]
     renderer_path = (

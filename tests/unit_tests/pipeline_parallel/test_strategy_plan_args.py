@@ -87,3 +87,27 @@ def test_strategy_policy_argument_accepts_seam_staggered():
         sys.argv = old_argv
 
     assert args.pipeline_strategy_policy == "seam-staggered"
+
+
+def test_microbatch_group_size_argument_is_exposed_for_vpp_tuning():
+    from megatron.training.arguments import parse_args
+
+    argv = [
+        "test-parse-args",
+        "--num-layers", "8",
+        "--hidden-size", "128",
+        "--num-attention-heads", "4",
+        "--max-position-embeddings", "128",
+        "--micro-batch-size", "1",
+        "--pipeline-model-parallel-size", "2",
+        "--microbatch-group-size-per-vp-stage", "2",
+    ]
+
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        args = parse_args(ignore_unknown_args=True)
+    finally:
+        sys.argv = old_argv
+
+    assert args.microbatch_group_size_per_vp_stage == 2

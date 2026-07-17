@@ -32,6 +32,9 @@ THROUGHPUT_RE = re.compile(r"throughput per GPU.*?:\s*([0-9.]+)", re.IGNORECASE)
 LOSS_RE = re.compile(r"lm loss value:\s*([0-9.Ee+-]+)")
 OOM_RE = re.compile(r"(out of memory|cuda error|nccl error|traceback)", re.IGNORECASE)
 FAILURE_PATTERNS = {
+    "argument_validation": re.compile(
+        r"(unrecognized arguments|error: argument|invalid choice)", re.IGNORECASE
+    ),
     "cuda_oom": re.compile(r"(cuda out of memory|out of memory)", re.IGNORECASE),
     "nccl_or_p2p": re.compile(
         r"(nccl error|nccl.*(failed|abort|timeout)|remote process exited|connection closed)",
@@ -45,7 +48,10 @@ FAILURE_PATTERNS = {
         r"(file not found|no such file|tokenizer|data path|checkpoint).*(error|missing|not found|no such)",
         re.IGNORECASE,
     ),
-    "timeout_or_deadlock": re.compile(r"(timed out|timeout|watchdog|collective operation timeout)", re.IGNORECASE),
+    "timeout_or_deadlock": re.compile(
+        r"(timed out|timeout waiting|watchdog.*timeout|collective operation timeout)",
+        re.IGNORECASE,
+    ),
 }
 
 

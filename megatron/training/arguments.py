@@ -2842,6 +2842,11 @@ def _add_distributed_args(parser):
                        'a first dependency-safe strategy-rewrite action. '
                        '"seam-staggered" shrinks warmup/cooldown groups and expands the '
                        'steady-state wave for seam-heavy dual-node runs.'))
+    add_strategy_arg('--microbatch-group-size-per-vp-stage',
+                       type=int, default=None,
+                       help=('Global microbatch group size used to construct the interleaved '
+                       'pipeline schedule table. Exposed explicitly for tuned VPP baselines '
+                       'and StrategyPlan lowering.'))
     add_strategy_arg('--pipeline-strategy-trace-path',
                        type=str, default=None,
                        help=('Optional JSON file to dump pipeline strategy trace events '
