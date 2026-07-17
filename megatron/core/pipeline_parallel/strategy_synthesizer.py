@@ -136,6 +136,10 @@ class StrategyTrace:
     ) -> None:
         if not self.enabled:
             return
+        if end_ts is None:
+            end_ts = time.time()
+        if start_ts is None:
+            start_ts = end_ts - max(0.0, float(elapsed_ms)) / 1000.0
         self.events.append(
             StrategyTraceEvent(
                 name=name,

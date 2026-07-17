@@ -116,6 +116,26 @@
       "overlap_p2p_comm": false
     },
     {
+      "id": "forgepipe_r000n_qwen06b_pp7_vp2_nsys_fallback",
+      "paper_model_id": "sanity-qwen3-0.6b",
+      "paper_label": "R000N 0.6B PP7 VP2 Nsight sanity fallback (not a paper result)",
+      "phase": "nsys",
+      "model": "qwen3_0_6b",
+      "dataset_spec": "proxy_public_subset_v1",
+      "parallelism": {"tp": 1, "pp": 7, "ep": 1, "vp": 2},
+      "runtime": {"micro_batch_size": 1, "global_batch_size": 14, "train_iters": 8},
+      "repeat_policy": {"independent_runs": 1, "seed_base": 7001},
+      "warmup_steps": 5,
+      "measure_steps": 2,
+      "profiler_policy": {"nsys": true, "step_start": 6, "step_end": 7, "profile_ranks": [0, 6], "trace_domains": ["cuda", "nvtx", "nccl", "osrt", "cublas"]},
+      "pipeline_model_parallel_layout": "Et*2|t*2|t*2|t*2|t*2|t*2|t*2|t*2|t*2|t*2|t*2|t*2|t*2|t*2L",
+      "strategy": {"policy": "default", "runtime": "fixed", "microbatch_group_size": 7, "trace": true, "profile_steps": 8},
+      "figure_membership": [],
+      "claim_membership": [],
+      "fsdp": {"enabled": false},
+      "overlap_p2p_comm": false
+    },
+    {
       "id": "forgepipe_r002_qwen8b_pp8_vp2_g8",
       "paper_model_id": "qwen3-8b",
       "paper_label": "R002 8B PP8 VP2 group 8",

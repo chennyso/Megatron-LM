@@ -49,6 +49,17 @@ def _load_strategy_runtime():
     return module
 
 
+def _load_strategy_synthesizer():
+    repo_root = Path(__file__).resolve().parents[3]
+    module_path = repo_root / "megatron" / "core" / "pipeline_parallel" / "strategy_synthesizer.py"
+    spec = importlib.util.spec_from_file_location("strategy_synthesizer_trace_test", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 class _ManualTimer:
     elapsed_ms = 2.5
 
@@ -93,6 +104,16 @@ def test_load_events_skips_empty_rank_sentinel_when_other_rank_has_events():
 
     assert len(events) == 1
     assert events[0]["pp_rank"] == 1
+
+
+def test_strategy_trace_records_host_interval_by_default():
+    module = _load_strategy_synthesizer()
+    trace = module.StrategyTrace(enabled=True, pp_rank=2)
+    trace.record("forward_step", 2.5, microbatch_id=1, model_chunk_id=0)
+    event = trace.events[0]
+    assert event.start_ts is not None
+    assert event.end_ts is not None
+    assert abs((event.end_ts - event.start_ts) * 1000.0 - 2.5) < 0.01
 
 
 def test_boundary_aware_layout_never_emits_empty_stage():
