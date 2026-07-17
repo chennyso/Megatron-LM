@@ -37,11 +37,11 @@ FAILURE_PATTERNS = {
     ),
     "cuda_oom": re.compile(r"(cuda out of memory|out of memory)", re.IGNORECASE),
     "nccl_or_p2p": re.compile(
-        r"(nccl error|nccl.*(failed|abort|timeout)|remote process exited|connection closed)",
+        r"(nccl (error|fatal)|nccl.*(abort|timeout)|remote process exited|connection closed)",
         re.IGNORECASE,
     ),
     "layout_or_schedule_validation": re.compile(
-        r"(pipeline.*layout|schedule table|strategy verifier|microbatch.*group).*(assert|invalid|error|must)",
+        r"((pipeline.*layout|schedule table|strategy verifier|microbatch.*group).*(assert|invalid|error|must)|contiguous micro-batches.*virtual pipeline stage)",
         re.IGNORECASE,
     ),
     "data_or_checkpoint": re.compile(
