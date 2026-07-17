@@ -61,6 +61,32 @@ def test_build_strategy_args_is_empty_without_strategy_block():
     assert module.build_strategy_args({}, Path("/tmp/unused")) == []
 
 
+def test_build_profiler_args_expands_multiple_ranks():
+    module = _load_runner()
+    args, profile_cfg = module.build_profiler_args(
+        {
+            "profiler_policy": {
+                "nsys": True,
+                "step_start": 6,
+                "step_end": 7,
+                "profile_ranks": [0, 6],
+            }
+        }
+    )
+
+    assert args == [
+        "--profile",
+        "--profile-step-start",
+        "6",
+        "--profile-step-end",
+        "7",
+        "--profile-ranks",
+        "0",
+        "6",
+    ]
+    assert profile_cfg["profile_ranks"] == [0, 6]
+
+
 def test_failure_classifier_separates_oom_from_incomplete_progress():
     module = _load_summarizer()
     result = module.classify_failure(

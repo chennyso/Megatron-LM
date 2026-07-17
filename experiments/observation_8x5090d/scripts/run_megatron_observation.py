@@ -168,9 +168,9 @@ def build_profiler_args(case: dict) -> tuple[list[str], dict]:
 
     profile_ranks = profile_cfg.get("profile_ranks", [0])
     if isinstance(profile_ranks, list):
-        profile_ranks_value = ",".join(str(rank) for rank in profile_ranks)
+        profile_rank_args = [str(rank) for rank in profile_ranks]
     else:
-        profile_ranks_value = str(profile_ranks)
+        profile_rank_args = [str(profile_ranks)]
     args = [
         "--profile",
         "--profile-step-start",
@@ -178,7 +178,7 @@ def build_profiler_args(case: dict) -> tuple[list[str], dict]:
         "--profile-step-end",
         str(profile_cfg.get("step_end", 8)),
         "--profile-ranks",
-        profile_ranks_value,
+        *profile_rank_args,
     ]
     return args, profile_cfg
 
