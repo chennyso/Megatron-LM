@@ -35,6 +35,11 @@ spec:
       spec:
         nodeSelector:
           kubernetes.io/hostname: g5
+        tolerations:
+        - key: bbt.sspu.edu.cn/stage0-excluded
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
         restartPolicy: Never
         containers:
         - name: benchmark
@@ -107,6 +112,11 @@ spec:
       spec:
         nodeSelector:
           kubernetes.io/hostname: g6
+        tolerations:
+        - key: bbt.sspu.edu.cn/stage0-excluded
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
         restartPolicy: Never
         containers:
         - name: benchmark
