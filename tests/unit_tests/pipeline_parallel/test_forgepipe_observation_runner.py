@@ -94,6 +94,7 @@ def test_renderer_records_explicit_nccl_p2p_path():
     args = SimpleNamespace(
         disable_sriov_ib_network=False,
         nccl_p2p_disable="0",
+        tolerate_stage0_excluded=True,
         job_name="dry-run",
         node="g5",
         image="image",
@@ -117,3 +118,4 @@ def test_renderer_records_explicit_nccl_p2p_path():
     )
     assert "export NCCL_P2P_DISABLE=0" in module.render(args)
     assert 'nvidia.com/gpu: "8"' in module.render(args)
+    assert "bbt.sspu.edu.cn/stage0-excluded" in module.render(args)

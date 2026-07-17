@@ -45,6 +45,15 @@ def render(args: argparse.Namespace) -> str:
         sriov_network_annotation = 'k8s.v1.cni.cncf.io/networks: ""'
         mlnxnics_quantity = "0"
         nccl_ib_disable = "1"
+    stage0_toleration = "# stage0-excluded toleration disabled"
+    if args.tolerate_stage0_excluded:
+        stage0_toleration = (
+            "tolerations:\n"
+            "        - key: bbt.sspu.edu.cn/stage0-excluded\n"
+            "          operator: Equal\n"
+            '          value: "true"\n'
+            "          effect: NoSchedule"
+        )
 
     replacements = {
         "__JOB_NAME__": args.job_name,
@@ -71,6 +80,7 @@ def render(args: argparse.Namespace) -> str:
         "__MLNXNICS_QUANTITY__": mlnxnics_quantity,
         "__NCCL_IB_DISABLE__": nccl_ib_disable,
         "__NCCL_P2P_DISABLE__": args.nccl_p2p_disable,
+        "__STAGE0_TOLERATION__": stage0_toleration,
     }
     rendered = TEMPLATE_PATH.read_text(encoding="utf-8")
     for old, new in replacements.items():
@@ -107,6 +117,11 @@ def main() -> int:
         choices=["0", "1"],
         default="1",
         help="Explicitly select the intra-node NCCL P2P path for matched baselines.",
+    )
+    parser.add_argument(
+        "--tolerate-stage0-excluded",
+        action="store_true",
+        help="Tolerate the explicit g5/g6 stage0 exclusion without mutating the node taint.",
     )
     parser.add_argument("--obs-repeat-count-override")
     parser.add_argument("--obs-seed-base-override")

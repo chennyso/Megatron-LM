@@ -20,6 +20,7 @@ spec:
           __SRIOV_NETWORK_ANNOTATION__
       spec:
         restartPolicy: Never
+        __STAGE0_TOLERATION__
         nodeSelector:
           kubernetes.io/hostname: __NODE_NAME__
         containers:
