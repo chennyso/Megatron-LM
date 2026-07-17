@@ -78,12 +78,12 @@ spec:
             value: "__OBS_SEED_BASE_OVERRIDE__"
           resources:
             requests:
-              __GPU_RESOURCE_NAME__: "8"
+              __GPU_RESOURCE_NAME__: "__GPU_COUNT__"
               nvidia.com/mlnxnics: "__MLNXNICS_QUANTITY__"
               cpu: "__CPU_REQUEST__"
               memory: "__MEM_REQUEST__"
             limits:
-              __GPU_RESOURCE_NAME__: "8"
+              __GPU_RESOURCE_NAME__: "__GPU_COUNT__"
               nvidia.com/mlnxnics: "__MLNXNICS_QUANTITY__"
               cpu: "__CPU_LIMIT__"
               memory: "__MEM_LIMIT__"

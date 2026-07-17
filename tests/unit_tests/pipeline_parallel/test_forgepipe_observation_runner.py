@@ -98,6 +98,7 @@ def test_renderer_records_explicit_nccl_p2p_path():
         node="g5",
         image="image",
         gpu_resource_name="nvidia.com/gpu",
+        gpu_count="8",
         phase="proxy",
         run_id="run",
         case_id="case",
@@ -115,3 +116,4 @@ def test_renderer_records_explicit_nccl_p2p_path():
         obs_seed_base_override=None,
     )
     assert "export NCCL_P2P_DISABLE=0" in module.render(args)
+    assert 'nvidia.com/gpu: "8"' in module.render(args)
