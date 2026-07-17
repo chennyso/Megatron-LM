@@ -262,3 +262,20 @@ unreachable through the command-line TLS path, so the audit used the live arXiv
 web search. Before submission, the exact route/crossing claim still requires a
 second search in DBLP, ACM Digital Library, IEEE Xplore, proceedings, patents,
 and current Megatron/TorchTitan issues and pull requests.
+
+## 13. Executed PP2/VPP2 Lowering Pilot (R102a)
+
+A dedicated two-rank sharded-autograd executor ran standard
+`0 -> 1 -> 0 -> 1` and folded `0 -> 1 -> 1 -> 0` routes on g5/g6 over verified
+IB. Across four microbatches, standard executed 12 forward and 12 backward
+remote sends; folded executed 8 and 8 plus four local chunk transitions.
+Predictions and owned parameter gradients matched the same-weight reference
+with maximum absolute error zero; loss differed by `4.47e-8`. Both ranks
+produced valid Nsight reports and selected NCCL RDMA Plugin v11 with GPUDirect
+DMABUF.
+
+This passes the route-lowering mechanism gate but not Megatron integration or
+performance. The apparent profiled wall-time gap is contaminated by first-use
+NCCL communicator initialization and is explicitly excluded from all claims.
+The detailed record is `FOLDED_ROUTE_AUTOGRAD_RESULTS_20260718.md`. R102b remains
+the small-Qwen Megatron correctness gate.
