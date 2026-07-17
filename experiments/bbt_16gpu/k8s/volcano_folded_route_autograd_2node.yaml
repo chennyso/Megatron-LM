@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: forgepipe-r102a-20260718-svc
+  name: forgepipe-r102a-r2-20260718-svc
   namespace: default
 spec:
   clusterIP: None
   selector:
-    app: forgepipe-r102a-20260718
+    app: forgepipe-r102a-r2-20260718
   ports:
   - name: torch
     port: 29619
@@ -15,10 +15,10 @@ spec:
 apiVersion: batch.volcano.sh/v1alpha1
 kind: Job
 metadata:
-  name: forgepipe-r102a-20260718
+  name: forgepipe-r102a-r2-20260718
   namespace: default
   labels:
-    app: forgepipe-r102a-20260718
+    app: forgepipe-r102a-r2-20260718
 spec:
   minAvailable: 2
   queue: default
@@ -29,7 +29,7 @@ spec:
     template:
       metadata:
         labels:
-          app: forgepipe-r102a-20260718
+          app: forgepipe-r102a-r2-20260718
         annotations:
           k8s.v1.cni.cncf.io/networks: sriov-ib-network
       spec:
@@ -49,13 +49,13 @@ spec:
           args: ["/opt/forgepipe/run.sh"]
           env: &env
           - name: SERVICE_NAME
-            value: forgepipe-r102a-20260718-svc
+            value: forgepipe-r102a-r2-20260718-svc
           - name: WORLD_NODES
             value: "2"
           - name: MASTER_PORT
             value: "29619"
           - name: RUN_ID
-            value: forgepipe-r102a-20260718
+            value: forgepipe-r102a-r2-20260718
           - name: GIT_BRANCH
             value: codex/forgepipe-pilot-20260717
           - name: NODE_NAME
@@ -91,7 +91,7 @@ spec:
             claimName: seampipe-paper-workspace
         - name: runner
           configMap:
-            name: forgepipe-r102a-runner-20260718
+            name: forgepipe-r102a-r2-runner-20260718
             defaultMode: 0755
         - name: dev-infiniband
           hostPath:
@@ -106,7 +106,7 @@ spec:
     template:
       metadata:
         labels:
-          app: forgepipe-r102a-20260718
+          app: forgepipe-r102a-r2-20260718
         annotations:
           k8s.v1.cni.cncf.io/networks: sriov-ib-network
       spec:
@@ -129,7 +129,7 @@ spec:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: forgepipe-r102a-runner-20260718
+  name: forgepipe-r102a-r2-runner-20260718
   namespace: default
 data:
   run.sh: |
@@ -180,6 +180,7 @@ data:
     git checkout --detach FETCH_HEAD
     COMMIT=$(git rev-parse HEAD)
     echo "FORGEPIPE_COMMIT $COMMIT"
+    export PYTHONPATH="$REPO_DIR:${PYTHONPATH:-}"
 
     PEERS=""
     for _ in $(seq 1 60); do
