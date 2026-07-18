@@ -20,6 +20,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 
+from single_node_timing import finish_global_interval, synchronized_start_ns
+
 
 Edge = tuple[int, int]
 
@@ -168,6 +170,7 @@ def summarize(rows: list[dict]) -> list[dict]:
     summary_rows: list[dict] = []
     metrics = (
         "wall_makespan_ms",
+        "launch_skew_us",
         "aggregate_decimal_gbps",
         "slowdown_vs_isolated_max",
         "ideal_max_prediction_error_pct",
@@ -247,8 +250,9 @@ def run_motif(
     iterations: int,
     warmup_iterations: int,
     payload_nonce: int,
+    start_gate_delay_ms: float,
     device: torch.device,
-) -> tuple[float, float, bool]:
+) -> tuple[float, float, float, bool]:
     rank = dist.get_rank()
     elements = math.ceil(size_bytes / 2)
     outgoing = any(src == rank for src, _ in motif.edges)
@@ -291,18 +295,17 @@ def run_motif(
 
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
-    wall_start = time.perf_counter()
+    start_ns = synchronized_start_ns(device, start_gate_delay_ms)
     start_event.record()
     issue(iterations)
     end_event.record()
     end_event.synchronize()
-    local_wall_ms = (time.perf_counter() - wall_start) * 1000.0
+    interval = finish_global_interval(start_ns, device)
     local_device_ms = float(start_event.elapsed_time(end_event))
-    wall_ms = reduce_max(local_wall_ms, device)
     device_ms = reduce_max(local_device_ms, device)
     payload_valid = validate_payload(recv_buffers, payload_nonce, device)
     dist.barrier()
-    return wall_ms, device_ms, payload_valid
+    return interval.elapsed_ms, device_ms, interval.launch_skew_us, payload_valid
 
 
 def record_for(
@@ -312,6 +315,7 @@ def record_for(
     repeat: int,
     wall_ms: float,
     device_ms: float,
+    launch_skew_us: float,
     payload_valid: bool,
     baseline_times: dict[str, float],
 ) -> dict:
@@ -330,6 +334,7 @@ def record_for(
         "nccl_p2p_disable": os.environ.get("NCCL_P2P_DISABLE", "unset"),
         "wall_makespan_ms": wall_ms,
         "max_device_ms": device_ms,
+        "launch_skew_us": launch_skew_us,
         "aggregate_decimal_gbps": (total_bytes / 1e9) / (wall_ms / 1000.0),
         "isolated_max_ms": isolated_max,
         "isolated_sum_ms": isolated_sum,
@@ -430,8 +435,8 @@ def main() -> int:
             rng = random.Random(int(cfg["randomization_seed"]) + int(size_bytes) + repeat)
             rng.shuffle(primitive_order)
             rng.shuffle(concurrent_order)
-            primitive_results: dict[str, tuple[float, float, bool]] = {}
-            concurrent_results: dict[str, tuple[float, float, bool]] = {}
+            primitive_results: dict[str, tuple[float, float, float, bool]] = {}
+            concurrent_results: dict[str, tuple[float, float, float, bool]] = {}
             blocks = (
                 (("primitive", primitive_order), ("concurrent", concurrent_order))
                 if repeat % 2 == 1
@@ -449,6 +454,7 @@ def main() -> int:
                             iterations,
                             int(cfg["warmup_iterations"]),
                             repeat,
+                            float(cfg["start_gate_delay_ms"]),
                             device,
                         )
                     finally:
@@ -461,10 +467,14 @@ def main() -> int:
             if rank == 0:
                 for motif in primitive_order + concurrent_order:
                     if motif.motif_id in primitive_results:
-                        wall_ms, device_ms, valid = primitive_results[motif.motif_id]
+                        wall_ms, device_ms, launch_skew_us, valid = primitive_results[
+                            motif.motif_id
+                        ]
                         baselines = {motif.motif_id: wall_ms}
                     else:
-                        wall_ms, device_ms, valid = concurrent_results[motif.motif_id]
+                        wall_ms, device_ms, launch_skew_us, valid = concurrent_results[
+                            motif.motif_id
+                        ]
                         baselines = {
                             name: primitive_results[name][0] for name in motif.primitive_ids
                         }
@@ -475,6 +485,7 @@ def main() -> int:
                         repeat,
                         wall_ms,
                         device_ms,
+                        launch_skew_us,
                         valid,
                         baselines,
                     )

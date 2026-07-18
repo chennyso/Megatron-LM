@@ -10,12 +10,13 @@ import math
 import os
 import random
 import statistics
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
+
+from single_node_timing import finish_global_interval, synchronized_start_ns
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,16 @@ class ComputeCase:
     m: int
     k: int
     n: int
+
+
+@dataclass(frozen=True)
+class Measurement:
+    elapsed_ms: float
+    payload_valid: bool
+    compute_valid: bool
+    launch_skew_us: float
+    compute_max_abs_error: float
+    compute_max_rel_error: float
 
 
 def compute_catalog() -> list[ComputeCase]:
@@ -53,6 +64,38 @@ def reduce_valid(value: bool, device: torch.device) -> bool:
     tensor = torch.tensor([int(value)], dtype=torch.int32, device=device)
     dist.all_reduce(tensor, op=dist.ReduceOp.MIN)
     return bool(tensor.item())
+
+
+def sample_positions(elements: int) -> list[int]:
+    return sorted(
+        {0, elements // 4, elements // 2, (3 * elements) // 4, elements - 1}
+    )
+
+
+def sampled_reference_error(
+    left: torch.Tensor,
+    right: torch.Tensor,
+    output: torch.Tensor,
+    rtol: float,
+    atol: float,
+) -> tuple[bool, float, float]:
+    positions = (
+        (0, 0),
+        (left.shape[0] // 2, right.shape[1] // 2),
+        (left.shape[0] - 1, right.shape[1] - 1),
+    )
+    valid = True
+    max_abs_error = 0.0
+    max_rel_error = 0.0
+    for row, column in positions:
+        expected = float(torch.dot(left[row].float(), right[:, column].float()).item())
+        actual = float(output[row, column].float().item())
+        abs_error = abs(actual - expected)
+        rel_error = abs_error / max(abs(expected), atol, 1e-12)
+        valid = valid and math.isfinite(actual) and abs_error <= atol + rtol * abs(expected)
+        max_abs_error = max(max_abs_error, abs_error)
+        max_rel_error = max(max_rel_error, rel_error)
+    return valid, max_abs_error, max_rel_error
 
 
 def percentile(values: list[float], quantile: float) -> float:
@@ -88,6 +131,11 @@ def summarize(rows: list[dict]) -> list[dict]:
         "contention_factor",
         "overlap_efficiency",
         "exposed_overhead_ms",
+        "comm_launch_skew_us",
+        "compute_launch_skew_us",
+        "concurrent_launch_skew_us",
+        "compute_reference_max_abs_error",
+        "compute_reference_max_rel_error",
     )
     summary_rows: list[dict] = []
     for (case_id, compute_location), bucket in sorted(grouped.items()):
@@ -131,6 +179,8 @@ class OverlapRunner:
             self.send = torch.full(
                 (self.elements,), 17.0, dtype=torch.bfloat16, device=self.device
             )
+            for sample_index, position in enumerate(sample_positions(self.elements)):
+                self.send[position] = 17.0 + sample_index
         elif self.rank == 1:
             self.recv = torch.full(
                 (self.elements,), -1.0, dtype=torch.bfloat16, device=self.device
@@ -171,7 +221,7 @@ class OverlapRunner:
             for _ in range(count):
                 torch.mm(self.left, self.right, out=self.output)
 
-    def measure(self, mode: str) -> tuple[float, bool, bool]:
+    def measure(self, mode: str) -> Measurement:
         warmup = int(self.cfg["warmup_iterations"])
         comm_count = int(self.cfg["comm_iterations"])
         compute_count = int(self.cfg["compute_iterations"])
@@ -186,26 +236,44 @@ class OverlapRunner:
         dist.barrier()
         torch.cuda.synchronize()
 
-        start = time.perf_counter()
+        start_ns = synchronized_start_ns(self.device, float(self.cfg["start_gate_delay_ms"]))
         if mode in {"compute", "concurrent"}:
             self.issue_compute(compute_count)
         if mode in {"comm", "concurrent"}:
             self.issue_comm(comm_count)
         torch.cuda.synchronize()
-        elapsed_ms = reduce_max((time.perf_counter() - start) * 1000.0, self.device)
+        interval = finish_global_interval(start_ns, self.device)
 
         payload_valid = True
         if self.recv is not None and mode in {"comm", "concurrent"}:
-            payload_valid = float(self.recv[0].item()) == 17.0
-            payload_valid = payload_valid and float(self.recv[-1].item()) == 17.0
+            for sample_index, position in enumerate(sample_positions(self.elements)):
+                payload_valid = payload_valid and (
+                    float(self.recv[position].item()) == 17.0 + sample_index
+                )
         payload_valid = reduce_valid(payload_valid, self.device)
         compute_valid = True
+        max_abs_error = 0.0
+        max_rel_error = 0.0
         if self.output is not None and mode in {"compute", "concurrent"}:
-            compute_valid = bool(torch.isfinite(self.output[0, 0]).item())
-            compute_valid = compute_valid and bool(torch.isfinite(self.output[-1, -1]).item())
+            compute_valid, max_abs_error, max_rel_error = sampled_reference_error(
+                self.left,
+                self.right,
+                self.output,
+                float(self.cfg["reference_rtol"]),
+                float(self.cfg["reference_atol"]),
+            )
         compute_valid = reduce_valid(compute_valid, self.device)
+        max_abs_error = reduce_max(max_abs_error, self.device)
+        max_rel_error = reduce_max(max_rel_error, self.device)
         dist.barrier()
-        return elapsed_ms, payload_valid, compute_valid
+        return Measurement(
+            elapsed_ms=interval.elapsed_ms,
+            payload_valid=payload_valid,
+            compute_valid=compute_valid,
+            launch_skew_us=interval.launch_skew_us,
+            compute_max_abs_error=max_abs_error,
+            compute_max_rel_error=max_rel_error,
+        )
 
 
 def make_record(
@@ -213,11 +281,11 @@ def make_record(
     location: str,
     repeat: int,
     cfg: dict,
-    measurements: dict[str, tuple[float, bool, bool]],
+    measurements: dict[str, Measurement],
 ) -> dict:
-    comm_ms = measurements["comm"][0]
-    compute_ms = measurements["compute"][0]
-    concurrent_ms = measurements["concurrent"][0]
+    comm_ms = measurements["comm"].elapsed_ms
+    compute_ms = measurements["compute"].elapsed_ms
+    concurrent_ms = measurements["concurrent"].elapsed_ms
     ideal_ms = max(comm_ms, compute_ms)
     overlap_denominator = min(comm_ms, compute_ms)
     return {
@@ -239,8 +307,21 @@ def make_record(
         "contention_factor": concurrent_ms / ideal_ms,
         "overlap_efficiency": (comm_ms + compute_ms - concurrent_ms) / overlap_denominator,
         "exposed_overhead_ms": concurrent_ms - ideal_ms,
-        "payload_valid": measurements["comm"][1] and measurements["concurrent"][1],
-        "compute_valid": measurements["compute"][2] and measurements["concurrent"][2],
+        "comm_launch_skew_us": measurements["comm"].launch_skew_us,
+        "compute_launch_skew_us": measurements["compute"].launch_skew_us,
+        "concurrent_launch_skew_us": measurements["concurrent"].launch_skew_us,
+        "compute_reference_max_abs_error": max(
+            measurements["compute"].compute_max_abs_error,
+            measurements["concurrent"].compute_max_abs_error,
+        ),
+        "compute_reference_max_rel_error": max(
+            measurements["compute"].compute_max_rel_error,
+            measurements["concurrent"].compute_max_rel_error,
+        ),
+        "payload_valid": measurements["comm"].payload_valid
+        and measurements["concurrent"].payload_valid,
+        "compute_valid": measurements["compute"].compute_valid
+        and measurements["concurrent"].compute_valid,
     }
 
 
@@ -296,7 +377,7 @@ def main() -> int:
                 ("compute", "comm", "concurrent"),
             )
             order = orders[(repeat - 1) % len(orders)]
-            measurements: dict[str, tuple[float, bool, bool]] = {}
+            measurements: dict[str, Measurement] = {}
             for mode in order:
                 torch.cuda.nvtx.range_push(
                     f"overlap={case.case_id};location={location};mode={mode};repeat={repeat}"
@@ -305,10 +386,10 @@ def main() -> int:
                     measurements[mode] = runner.measure(mode)
                 finally:
                     torch.cuda.nvtx.range_pop()
-            all_valid = all_valid and measurements["comm"][1]
-            all_valid = all_valid and measurements["concurrent"][1]
-            all_valid = all_valid and measurements["compute"][2]
-            all_valid = all_valid and measurements["concurrent"][2]
+            all_valid = all_valid and measurements["comm"].payload_valid
+            all_valid = all_valid and measurements["concurrent"].payload_valid
+            all_valid = all_valid and measurements["compute"].compute_valid
+            all_valid = all_valid and measurements["concurrent"].compute_valid
             if rank == 0:
                 record = make_record(case, location, repeat, cfg, measurements)
                 rows.append(record)

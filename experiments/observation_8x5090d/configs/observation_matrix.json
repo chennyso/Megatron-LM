@@ -49,6 +49,7 @@
     "target_bytes_per_flow": 536870912,
     "min_iterations": 4,
     "max_iterations": 200,
+    "start_gate_delay_ms": 20,
     "randomization_seed": 20260718
   },
   "compute_comm_motifs": {
@@ -56,6 +57,9 @@
     "comm_iterations": 8,
     "compute_iterations": 1,
     "warmup_iterations": 2,
+    "start_gate_delay_ms": 20,
+    "reference_rtol": 0.05,
+    "reference_atol": 2.0,
     "repetitions": 5,
     "randomization_seed": 20260718
   },
