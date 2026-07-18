@@ -82,7 +82,11 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--git-ref", required=True)
-    parser.add_argument("--phase", choices=["screening", "diagnostic", "tuning", "all"], default="screening")
+    parser.add_argument(
+        "--phase",
+        choices=["screening", "screening_clean", "diagnostic", "tuning", "all"],
+        default="screening",
+    )
     parser.add_argument("--profile-mode", choices=["throughput", "trace", "nsys"], default="throughput")
     parser.add_argument("--repeats", type=int)
     parser.add_argument("--seed", type=int)

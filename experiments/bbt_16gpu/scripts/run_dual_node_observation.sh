@@ -5,7 +5,7 @@ required_env=(
   CASE_ID RUN_ID REPEAT_ID NODE_RANK MASTER_ADDR MASTER_PORT
   GIT_REMOTE GIT_REF WORKSPACE_ROOT MODEL_PATH DATA_PATH
   VPP_SIZE OVERLAP_P2P WARMUP_FLUSH_OVERLAP PROFILE_MODE
-  WARMUP_STEPS MEASURE_STEPS
+  SEQUENCE_PARALLEL WARMUP_STEPS MEASURE_STEPS
 )
 for name in "${required_env[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -107,6 +107,7 @@ payload = {
     "vpp_size": int(os.environ["VPP_SIZE"]),
     "overlap_p2p": os.environ["OVERLAP_P2P"] == "1",
     "warmup_flush_overlap": os.environ["WARMUP_FLUSH_OVERLAP"] == "1",
+    "sequence_parallel": os.environ["SEQUENCE_PARALLEL"] == "1",
     "microbatch_group_size": int(os.environ.get("MICROBATCH_GROUP_SIZE", "0")) or None,
     "warmup_steps": int(os.environ["WARMUP_STEPS"]),
     "measure_steps": int(os.environ["MEASURE_STEPS"]),
@@ -195,6 +196,9 @@ COMMON_ARGS=(
 )
 
 SCHEDULE_ARGS=()
+if [[ "${SEQUENCE_PARALLEL}" == "1" ]]; then
+  SCHEDULE_ARGS+=(--sequence-parallel)
+fi
 if [[ "${VPP_SIZE}" -eq 1 ]]; then
   SCHEDULE_ARGS+=(--no-overlap-p2p-communication)
 else

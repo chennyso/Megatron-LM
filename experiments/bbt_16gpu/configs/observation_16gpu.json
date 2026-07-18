@@ -32,6 +32,78 @@
     "randomization_seed": 20260718
   },
   "cases": {
+    "clean_1f1b_nosp": {
+      "phase": "screening_clean",
+      "schedule": "1f1b",
+      "vpp_size": 1,
+      "overlap_p2p": false,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": null,
+      "sequence_parallel": false
+    },
+    "clean_vpp2_nosp": {
+      "phase": "screening_clean",
+      "schedule": "vpp2",
+      "vpp_size": 2,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": false
+    },
+    "clean_vpp4_nosp": {
+      "phase": "screening_clean",
+      "schedule": "vpp4",
+      "vpp_size": 4,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": false
+    },
+    "clean_vpp8_nosp": {
+      "phase": "screening_clean",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": false
+    },
+    "clean_1f1b_sp": {
+      "phase": "screening_clean",
+      "schedule": "1f1b",
+      "vpp_size": 1,
+      "overlap_p2p": false,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": null,
+      "sequence_parallel": true
+    },
+    "clean_vpp2_sp": {
+      "phase": "screening_clean",
+      "schedule": "vpp2",
+      "vpp_size": 2,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": true
+    },
+    "clean_vpp4_sp": {
+      "phase": "screening_clean",
+      "schedule": "vpp4",
+      "vpp_size": 4,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": true
+    },
+    "clean_vpp8_sp": {
+      "phase": "screening_clean",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": true
+    },
     "screen_1f1b": {
       "phase": "screening",
       "schedule": "1f1b",

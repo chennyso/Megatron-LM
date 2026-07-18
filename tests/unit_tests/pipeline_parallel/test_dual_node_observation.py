@@ -59,6 +59,55 @@ def test_renderer_requests_exactly_eight_standard_gpus_per_node():
     assert "bbt.sspu.edu.cn/stage0-excluded" in manifest
 
 
+def test_clean_screening_matrix_pairs_sequence_parallel_on_and_off():
+    config = json.loads(
+        (REPO_ROOT / "experiments/bbt_16gpu/configs/observation_16gpu.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    clean_cases = {
+        case_id: case
+        for case_id, case in config["cases"].items()
+        if case["phase"] == "screening_clean"
+    }
+
+    assert len(clean_cases) == 8
+    for schedule in ("1f1b", "vpp2", "vpp4", "vpp8"):
+        variants = [
+            case["sequence_parallel"]
+            for case in clean_cases.values()
+            if case["schedule"] == schedule
+        ]
+        assert sorted(variants) == [False, True]
+
+
+def test_renderer_lowers_sequence_parallel_into_explicit_environment():
+    renderer = load_module(
+        "dual_node_observation_renderer_sp",
+        "experiments/bbt_16gpu/scripts/render_dual_node_observation.py",
+    )
+    manifest = renderer.render(
+        SimpleNamespace(
+            config=REPO_ROOT / "experiments/bbt_16gpu/configs/observation_16gpu.json",
+            case_id="clean_vpp4_sp",
+            run_id="test-run-sp",
+            repeat_id=1,
+            git_ref="test-branch",
+            profile_mode="throughput",
+            master_port=29500,
+            warmup_steps=None,
+            measure_steps=None,
+            git_remote=None,
+            image=None,
+            workspace_pvc=None,
+            model_pvc=None,
+        )
+    )
+
+    assert manifest.count("- name: SEQUENCE_PARALLEL") == 2
+    assert manifest.count('value: "1"') >= 2
+
+
 def test_analyzer_excludes_warmup_steps(tmp_path):
     analyzer = load_module(
         "dual_node_observation_analyzer",
