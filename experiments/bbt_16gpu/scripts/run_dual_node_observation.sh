@@ -42,6 +42,12 @@ git -C "${CODE_DIR}" fetch --depth=1 origin "${GIT_REF}"
 git -C "${CODE_DIR}" checkout --detach FETCH_HEAD
 GIT_COMMIT="$(git -C "${CODE_DIR}" rev-parse HEAD)"
 
+if ! python3 -c 'import sentencepiece, transformers' >/dev/null 2>&1; then
+  python3 -m pip install --quiet --no-cache-dir \
+    'transformers==4.51.0' \
+    'sentencepiece==0.2.0'
+fi
+
 test -f "${MODEL_PATH}/config.json"
 test -f "${MODEL_PATH}/tokenizer.json"
 test -f "${DATA_PATH}.bin"
@@ -109,6 +115,8 @@ payload = {
     "rdma_device": "${RDMA_DEV}",
     "python": platform.python_version(),
     "torch": __import__("torch").__version__,
+    "transformers": __import__("transformers").__version__,
+    "sentencepiece": __import__("sentencepiece").__version__,
     "cuda_runtime": __import__("torch").version.cuda,
     "command_line": " ".join(subprocess.list2cmdline([x]) for x in os.sys.argv),
 }
