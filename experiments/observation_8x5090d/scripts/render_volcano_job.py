@@ -9,7 +9,13 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE_PATH = REPO_ROOT / "experiments" / "observation_8x5090d" / "k8s" / "volcano_single_node_8gpu.yaml.tmpl"
+TEMPLATE_PATH = (
+    REPO_ROOT
+    / "experiments"
+    / "observation_8x5090d"
+    / "k8s"
+    / "volcano_single_node_8gpu.yaml.tmpl"
+)
 KUBECTL_PREFIX = [
     "env",
     "-u",
@@ -80,6 +86,10 @@ def render(args: argparse.Namespace) -> str:
         "__SHM_SIZE__": args.shm_size,
         "__OBS_REPEAT_COUNT_OVERRIDE__": args.obs_repeat_count_override or "",
         "__OBS_SEED_BASE_OVERRIDE__": args.obs_seed_base_override or "",
+        "__OBS_MOTIF_TARGET__": getattr(args, "motif_target", "all"),
+        "__OBS_MOTIF_NSYS__": "1" if getattr(args, "motif_nsys", False) else "0",
+        "__OBS_COMPUTE_COMM_CASE_ID__": getattr(args, "compute_comm_case_id", None) or "",
+        "__OBS_COMPUTE_COMM_LOCATIONS__": getattr(args, "compute_comm_locations", None) or "",
         "__SRIOV_NETWORK_ANNOTATION__": sriov_network_annotation,
         "__MLNXNICS_QUANTITY__": mlnxnics_quantity,
         "__NCCL_IB_DISABLE__": nccl_ib_disable,
@@ -134,6 +144,13 @@ def main() -> int:
     )
     parser.add_argument("--obs-repeat-count-override")
     parser.add_argument("--obs-seed-base-override")
+    parser.add_argument("--motif-target", choices=["all", "compute-comm"], default="all")
+    parser.add_argument("--motif-nsys", action="store_true")
+    parser.add_argument("--compute-comm-case-id")
+    parser.add_argument(
+        "--compute-comm-locations",
+        help="Comma-separated sender,receiver,disjoint subset.",
+    )
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 

@@ -47,10 +47,35 @@ def compute_catalog() -> list[ComputeCase]:
     ]
 
 
+def select_work(
+    case_ids: list[str] | None = None,
+    compute_locations: list[str] | None = None,
+) -> list[tuple[ComputeCase, str, int]]:
+    selected_cases = set(case_ids or [])
+    selected_locations = set(compute_locations or [])
+    locations = {"sender": 0, "receiver": 1, "disjoint": 2}
+    work = [
+        (case, location, compute_rank)
+        for case in compute_catalog()
+        if not selected_cases or case.case_id in selected_cases
+        for location, compute_rank in locations.items()
+        if not selected_locations or location in selected_locations
+    ]
+    if not work:
+        raise ValueError("compute/communication filters selected no work")
+    return work
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--matrix-path", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--case-id", action="append")
+    parser.add_argument(
+        "--compute-location",
+        action="append",
+        choices=["sender", "receiver", "disjoint"],
+    )
     return parser.parse_args()
 
 
@@ -333,6 +358,8 @@ def main() -> int:
         cfg["repetitions"] = int(os.environ["OBS_REPEAT_COUNT_OVERRIDE"])
     if os.environ.get("OBS_SEED_BASE_OVERRIDE"):
         cfg["randomization_seed"] = int(os.environ["OBS_SEED_BASE_OVERRIDE"])
+    cfg["case_filter"] = args.case_id or []
+    cfg["compute_location_filter"] = args.compute_location or []
     if int(os.environ.get("WORLD_SIZE", "1")) != 8:
         raise RuntimeError("compute/communication overlap benchmark requires exactly eight ranks")
 
@@ -359,12 +386,7 @@ def main() -> int:
         )
     dist.barrier()
 
-    locations = {"sender": 0, "receiver": 1, "disjoint": 2}
-    work = [
-        (case, location, compute_rank)
-        for case in compute_catalog()
-        for location, compute_rank in locations.items()
-    ]
+    work = select_work(args.case_id, args.compute_location)
     rows: list[dict] = []
     all_valid = True
     for repeat in range(1, int(cfg["repetitions"]) + 1):

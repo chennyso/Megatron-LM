@@ -100,14 +100,54 @@ if [ "${PHASE}" = "motif" ]; then
   nvidia-smi dmon -s pucvmet -d 1 -o DT > "${MOTIF_DIR}/nvidia-smi-dmon.log" 2>&1 &
   DMON_PID=$!
   trap 'kill "${DMON_PID}" 2>/dev/null || true; wait "${DMON_PID}" 2>/dev/null || true' EXIT
-  torchrun --standalone --nproc_per_node=8 \
-    experiments/observation_8x5090d/scripts/benchmark_concurrent_motifs.py \
-    --matrix-path "${MATRIX_PATH}" \
-    --output-dir "${MOTIF_DIR}"
-  torchrun --standalone --nproc_per_node=8 \
-    experiments/observation_8x5090d/scripts/benchmark_compute_comm_overlap.py \
-    --matrix-path "${MATRIX_PATH}" \
-    --output-dir "${MOTIF_DIR}/compute_comm"
+  MOTIF_TARGET="${OBS_MOTIF_TARGET:-all}"
+  if [ "${MOTIF_TARGET}" = "all" ]; then
+    torchrun --standalone --nproc_per_node=8 \
+      experiments/observation_8x5090d/scripts/benchmark_concurrent_motifs.py \
+      --matrix-path "${MATRIX_PATH}" \
+      --output-dir "${MOTIF_DIR}"
+  fi
+  if [ "${MOTIF_TARGET}" = "all" ] || [ "${MOTIF_TARGET}" = "compute-comm" ]; then
+    COMPUTE_CMD=(
+      torchrun --standalone --nproc_per_node=8
+      experiments/observation_8x5090d/scripts/benchmark_compute_comm_overlap.py
+      --matrix-path "${MATRIX_PATH}"
+      --output-dir "${MOTIF_DIR}/compute_comm"
+    )
+    if [ -n "${OBS_COMPUTE_COMM_CASE_ID:-}" ]; then
+      COMPUTE_CMD+=(--case-id "${OBS_COMPUTE_COMM_CASE_ID}")
+    fi
+    if [ -n "${OBS_COMPUTE_COMM_LOCATIONS:-}" ]; then
+      IFS=',' read -r -a COMPUTE_LOCATIONS <<< "${OBS_COMPUTE_COMM_LOCATIONS}"
+      for location in "${COMPUTE_LOCATIONS[@]}"; do
+        COMPUTE_CMD+=(--compute-location "${location}")
+      done
+    fi
+    if [ "${OBS_MOTIF_NSYS:-0}" = "1" ]; then
+      mkdir -p "${MOTIF_DIR}/compute_comm"
+      NSYS_PREFIX="${MOTIF_DIR}/compute_comm/compute_comm_nsys"
+      nsys profile \
+        --trace=cuda,nvtx,nccl,cublas \
+        --sample=none \
+        --cpuctxsw=none \
+        --trace-fork-before-exec=true \
+        --stats=false \
+        --force-overwrite=true \
+        --output="${NSYS_PREFIX}" \
+        "${COMPUTE_CMD[@]}"
+      nsys export \
+        --type=sqlite \
+        --force-overwrite=true \
+        --output="${NSYS_PREFIX}.sqlite" \
+        "${NSYS_PREFIX}.nsys-rep"
+    else
+      "${COMPUTE_CMD[@]}"
+    fi
+  fi
+  if [ "${MOTIF_TARGET}" != "all" ] && [ "${MOTIF_TARGET}" != "compute-comm" ]; then
+    echo "Unsupported OBS_MOTIF_TARGET=${MOTIF_TARGET}" >&2
+    exit 2
+  fi
   exit 0
 fi
 

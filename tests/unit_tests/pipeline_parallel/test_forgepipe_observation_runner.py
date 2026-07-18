@@ -238,3 +238,55 @@ def test_single_node_entrypoint_uses_the_rendered_immutable_git_ref():
     assert "GIT_BRANCH" not in entrypoint
     assert 'rev-parse --verify "${GIT_REF}^{commit}"' in entrypoint
     assert 'checkout --detach FETCH_HEAD' in entrypoint
+
+
+def test_motif_renderer_passes_nsys_target_and_compute_filters():
+    repo_root = Path(__file__).resolve().parents[3]
+    renderer_path = (
+        repo_root
+        / "experiments"
+        / "observation_8x5090d"
+        / "scripts"
+        / "render_volcano_job.py"
+    )
+    spec = importlib.util.spec_from_file_location("forgepipe_nsys_renderer", renderer_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    args = SimpleNamespace(
+        disable_sriov_ib_network=True,
+        nccl_p2p_disable="1",
+        tolerate_stage0_excluded=True,
+        job_name="nsys-dry-run",
+        node="g6",
+        image="image",
+        gpu_resource_name="nvidia.com/gpu",
+        gpu_count="8",
+        phase="motif",
+        run_id="nsys-run",
+        case_id="",
+        matrix_path="matrix.json",
+        git_remote_url="remote",
+        git_branch="branch",
+        git_ref="commit",
+        workspace_pvc="workspace",
+        model_pvc="models",
+        cpu_request="1",
+        cpu_limit="2",
+        mem_request="1Gi",
+        mem_limit="2Gi",
+        shm_size="1Gi",
+        obs_repeat_count_override="1",
+        obs_seed_base_override="seed",
+        motif_target="compute-comm",
+        motif_nsys=True,
+        compute_comm_case_id="mlp_forward",
+        compute_comm_locations="sender,receiver,disjoint",
+    )
+
+    manifest = module.render(args)
+    assert 'name: OBS_MOTIF_TARGET\n            value: "compute-comm"' in manifest
+    assert 'name: OBS_MOTIF_NSYS\n            value: "1"' in manifest
+    assert 'value: "mlp_forward"' in manifest
+    assert 'value: "sender,receiver,disjoint"' in manifest

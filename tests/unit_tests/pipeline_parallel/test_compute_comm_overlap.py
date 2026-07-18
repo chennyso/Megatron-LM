@@ -40,6 +40,16 @@ def test_compute_catalog_covers_forward_dinput_and_dweight():
     assert qkv.n == 5120
 
 
+def test_select_work_filters_case_and_keeps_requested_locations():
+    module = load_module()
+    work = module.select_work(["mlp_forward"], ["sender", "disjoint"])
+
+    assert [(case.case_id, location, rank) for case, location, rank in work] == [
+        ("mlp_forward", "sender", 0),
+        ("mlp_forward", "disjoint", 2),
+    ]
+
+
 def test_sampled_reference_error_checks_values_not_only_finiteness():
     module = load_module()
     torch = module.torch
