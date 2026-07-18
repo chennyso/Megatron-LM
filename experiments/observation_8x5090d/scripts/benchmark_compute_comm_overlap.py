@@ -262,11 +262,15 @@ class OverlapRunner:
         torch.cuda.synchronize()
 
         start_ns = synchronized_start_ns(self.device, float(self.cfg["start_gate_delay_ms"]))
-        if mode in {"compute", "concurrent"}:
-            self.issue_compute(compute_count)
-        if mode in {"comm", "concurrent"}:
-            self.issue_comm(comm_count)
-        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push(f"timed-window;mode={mode}")
+        try:
+            if mode in {"compute", "concurrent"}:
+                self.issue_compute(compute_count)
+            if mode in {"comm", "concurrent"}:
+                self.issue_comm(comm_count)
+            torch.cuda.synchronize()
+        finally:
+            torch.cuda.nvtx.range_pop()
         interval = finish_global_interval(start_ns, self.device)
 
         payload_valid = True
