@@ -194,10 +194,13 @@ def main() -> int:
     case_values: dict[str, list[float]] = defaultdict(list)
     for repeat_dir in sorted(args.run_root.glob("*/repeat_*")):
         case_id = repeat_dir.parent.name
-        log_path = repeat_dir / "node_0" / "training.log"
-        if not log_path.exists():
+        parsed_logs = []
+        for log_path in sorted(repeat_dir.glob("node_*/training.log")):
+            steps, summary = parse_steps(log_path, args.warmup_steps, args.seq_length)
+            parsed_logs.append((len(steps), log_path, steps, summary))
+        if not parsed_logs:
             continue
-        steps, summary = parse_steps(log_path, args.warmup_steps, args.seq_length)
+        _, log_path, steps, summary = max(parsed_logs, key=lambda item: item[0])
         trace_summary = analyze_traces(repeat_dir / "strategy_traces")
         repeat_id = int(repeat_dir.name.split("_")[-1])
         median_ms = summary["iteration_time_ms"]["median"]
@@ -207,6 +210,7 @@ def main() -> int:
             {
                 "case_id": case_id,
                 "repeat_id": repeat_id,
+                "metric_log_node": log_path.parent.name,
                 "completed_steps": summary["completed_steps"],
                 "steady_steps": summary["steady_steps"],
                 "median_iter_ms": median_ms,
