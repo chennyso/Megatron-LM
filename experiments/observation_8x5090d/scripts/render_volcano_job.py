@@ -90,7 +90,11 @@ def render(args: argparse.Namespace) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", required=True, choices=["hardware", "proxy", "baseline", "nsys", "rewrite"])
+    parser.add_argument(
+        "--phase",
+        required=True,
+        choices=["hardware", "motif", "proxy", "baseline", "nsys", "rewrite"],
+    )
     parser.add_argument("--node", default="g5")
     parser.add_argument("--job-name", required=True)
     parser.add_argument("--run-id", required=True)

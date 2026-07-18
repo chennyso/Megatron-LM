@@ -38,7 +38,7 @@ fi
 MATRIX_PATH="${MATRIX_PATH:-experiments/observation_8x5090d/configs/observation_matrix.json}"
 export MATRIX_PATH
 
-if [ "${PHASE}" != "hardware" ]; then
+if [ "${PHASE}" != "hardware" ] && [ "${PHASE}" != "motif" ]; then
   DATASET_SPEC_ID="$(
     "${OBS_PYTHON}" - <<'PY'
 import json
@@ -79,6 +79,19 @@ if [ "${PHASE}" = "hardware" ]; then
   "${OBS_PYTHON}" experiments/observation_8x5090d/scripts/run_hardware_profile.py \
     --matrix-path "${MATRIX_PATH}" \
     --output-dir "${RESULT_ROOT}/hardware"
+  exit 0
+fi
+
+if [ "${PHASE}" = "motif" ]; then
+  MOTIF_DIR="${RESULT_ROOT}/motif"
+  mkdir -p "${MOTIF_DIR}"
+  nvidia-smi dmon -s pucvmet -d 1 -o DT > "${MOTIF_DIR}/nvidia-smi-dmon.log" 2>&1 &
+  DMON_PID=$!
+  trap 'kill "${DMON_PID}" 2>/dev/null || true; wait "${DMON_PID}" 2>/dev/null || true' EXIT
+  torchrun --standalone --nproc_per_node=8 \
+    experiments/observation_8x5090d/scripts/benchmark_concurrent_motifs.py \
+    --matrix-path "${MATRIX_PATH}" \
+    --output-dir "${MOTIF_DIR}"
   exit 0
 fi
 

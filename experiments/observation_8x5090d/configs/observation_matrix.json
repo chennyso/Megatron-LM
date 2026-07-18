@@ -33,6 +33,24 @@
     "warmup_iterations": 5,
     "measure_iterations": 20
   },
+  "interference_motifs": {
+    "message_sizes_bytes": [
+      65536,
+      262144,
+      1048576,
+      4194304,
+      16777216,
+      41943040,
+      67108864,
+      268435456
+    ],
+    "repetitions": 5,
+    "warmup_iterations": 3,
+    "target_bytes_per_flow": 536870912,
+    "min_iterations": 4,
+    "max_iterations": 200,
+    "randomization_seed": 20260718
+  },
   "datasets": {
     "proxy_public_subset_v1": {
       "id": "proxy_public_subset_v1",
