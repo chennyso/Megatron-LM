@@ -24,9 +24,15 @@ def test_observation_matrix_uses_real_32b_workload_and_expected_schedules():
     )
     assert config["workload"]["model_path"] == "/models/qwen3-32B"
     assert "fineweb_edu_formal_text_document" in config["workload"]["data_path"]
+    assert config["workload"]["head_dim"] == 128
     assert config["workload"]["fsdp"] is False
     assert {config["cases"][case]["vpp_size"] for case in config["cases"] if case.startswith("screen_")} == {1, 2, 4, 8}
     assert config["repeat_policy"]["throughput_repeats"] == 5
+    launcher = (
+        REPO_ROOT / "experiments/bbt_16gpu/scripts/run_dual_node_observation.sh"
+    ).read_text(encoding="utf-8")
+    assert "--kv-channels 128" in launcher
+    assert "--kv-channels 80" not in launcher
 
 
 def test_renderer_requests_exactly_eight_standard_gpus_per_node():

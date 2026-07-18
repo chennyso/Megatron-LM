@@ -155,6 +155,11 @@ be used for schedule ranking, speedup, or paper claims.  All screening cases
 must be repeated from an immutable commit after timer gating, with a tuned
 sequence-parallel baseline included.
 
+The same invalid run family also used `--kv-channels 80`, while the mounted
+Qwen3-32B `config.json` and Megatron's Qwen3-32B reference configuration use a
+128-dimensional attention head.  Formal runs use `--kv-channels 128`; the
+earlier workload must not be described as the Qwen3-32B architecture.
+
 The real dataset, tokenizer, model config, IB link characterization, renderer,
 randomized matrix controller, 1F1B/VPP trace paths, and analysis scripts are
 ready. A two-node real-data shakeout was submitted as

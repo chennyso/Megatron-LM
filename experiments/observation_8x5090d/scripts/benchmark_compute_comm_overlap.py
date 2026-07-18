@@ -29,7 +29,7 @@ class ComputeCase:
 
 def compute_catalog() -> list[ComputeCase]:
     return [
-        ComputeCase("qkv_forward", "F", 4096, 5120, 3200),
+        ComputeCase("qkv_forward", "F", 4096, 5120, 5120),
         ComputeCase("mlp_forward", "F", 4096, 5120, 25600),
         ComputeCase("mlp_dinput", "dI", 4096, 25600, 5120),
         ComputeCase("mlp_dweight", "dW", 5120, 4096, 25600),

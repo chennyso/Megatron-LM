@@ -138,7 +138,7 @@ COMMON_ARGS=(
   --hidden-size 5120
   --ffn-hidden-size 25600
   --num-attention-heads 64
-  --kv-channels 80
+  --kv-channels 128
   --group-query-attention
   --num-query-groups 8
   --seq-length 4096

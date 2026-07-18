@@ -34,3 +34,6 @@ def test_compute_catalog_covers_forward_dinput_and_dweight():
         "mlp_dweight",
     }
     assert all(case.m > 0 and case.k > 0 and case.n > 0 for case in catalog)
+    qkv = next(case for case in catalog if case.case_id == "qkv_forward")
+    # Qwen3-32B: (64 Q heads + 2 * 8 KV heads) * head_dim 128 / TP2.
+    assert qkv.n == 5120

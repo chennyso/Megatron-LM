@@ -16,6 +16,7 @@
     "data_path": "/workspace/datasets/fineweb_edu/formal_slice/fineweb_edu_formal_text_document",
     "tensor_parallel_size": 2,
     "pipeline_parallel_size": 8,
+    "head_dim": 128,
     "sequence_length": 4096,
     "micro_batch_size": 1,
     "global_batch_size": 16,
