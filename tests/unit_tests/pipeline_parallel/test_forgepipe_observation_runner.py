@@ -222,3 +222,19 @@ def test_motif_renderer_uses_ephemeral_shallow_code_checkout():
     assert 'fetch --depth 1 origin "${GIT_REF}"' in manifest
     assert "checkout --detach FETCH_HEAD" in manifest
     assert "value: /opt/observation-code/motif-run" in manifest
+
+
+def test_single_node_entrypoint_uses_the_rendered_immutable_git_ref():
+    repo_root = Path(__file__).resolve().parents[3]
+    entrypoint = (
+        repo_root
+        / "experiments"
+        / "observation_8x5090d"
+        / "runner"
+        / "observation_entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'GIT_REF="${GIT_REF:?GIT_REF is required}"' in entrypoint
+    assert "GIT_BRANCH" not in entrypoint
+    assert 'rev-parse --verify "${GIT_REF}^{commit}"' in entrypoint
+    assert 'checkout --detach FETCH_HEAD' in entrypoint

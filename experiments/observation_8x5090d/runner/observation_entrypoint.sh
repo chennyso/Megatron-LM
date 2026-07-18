@@ -4,7 +4,7 @@ set -euo pipefail
 PHASE="${PHASE:?PHASE is required}"
 RUN_ID="${RUN_ID:?RUN_ID is required}"
 GIT_REMOTE_URL="${GIT_REMOTE_URL:?GIT_REMOTE_URL is required}"
-GIT_BRANCH="${GIT_BRANCH:?GIT_BRANCH is required}"
+GIT_REF="${GIT_REF:?GIT_REF is required}"
 RESULT_ROOT="${RESULT_ROOT:-/workspace/runs/observation_8x5090d/${RUN_ID}}"
 REPO_DIR="${REPO_DIR:-/workspace/code/Megatron-LM-observation}"
 CASE_ID="${CASE_ID:-}"
@@ -17,12 +17,24 @@ if [ -f "${REPO_DIR}/.git/index.lock" ]; then
 fi
 
 if [ ! -d "${REPO_DIR}/.git" ]; then
-  git -c http.sslVerify=false clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
-else
-  git -C "${REPO_DIR}" -c http.sslVerify=false fetch origin "${GIT_BRANCH}"
-  git -C "${REPO_DIR}" checkout "${GIT_BRANCH}"
-  git -C "${REPO_DIR}" reset --hard "origin/${GIT_BRANCH}"
+  git -c http.sslVerify=false clone --filter=blob:none --no-checkout "${GIT_REMOTE_URL}" "${REPO_DIR}"
 fi
+
+if EXPECTED_COMMIT="$(git -C "${REPO_DIR}" rev-parse --verify "${GIT_REF}^{commit}" 2>/dev/null)" && \
+   [ "$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || true)" = "${EXPECTED_COMMIT}" ]; then
+  echo "[observation-code] reusing ${REPO_DIR} at ${EXPECTED_COMMIT}"
+else
+  git -C "${REPO_DIR}" -c http.sslVerify=false fetch --depth 1 origin "${GIT_REF}"
+  git -C "${REPO_DIR}" checkout --detach FETCH_HEAD
+fi
+
+EXPECTED_COMMIT="$(git -C "${REPO_DIR}" rev-parse --verify "${GIT_REF}^{commit}")"
+ACTUAL_COMMIT="$(git -C "${REPO_DIR}" rev-parse HEAD)"
+if [ "${ACTUAL_COMMIT}" != "${EXPECTED_COMMIT}" ]; then
+  echo "[observation-code] commit mismatch: expected=${EXPECTED_COMMIT} actual=${ACTUAL_COMMIT}" >&2
+  exit 1
+fi
+echo "[observation-code] verified commit ${ACTUAL_COMMIT}"
 
 cd "${REPO_DIR}"
 
