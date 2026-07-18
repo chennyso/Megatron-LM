@@ -2604,6 +2604,91 @@ def forward_backward_pipelining_without_interleaving(
         output_tensors = []
     forward_data_store = []
 
+    strategy_trace_path = getattr(config, "pipeline_strategy_trace_path", None)
+    pipeline_parallel_rank = p2p_communicator.current_stage
+    if strategy_trace_path:
+        global_rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        dp_rank = parallel_state.get_data_parallel_rank()
+        strategy_trace_path = strategy_trace_path.format(
+            rank=global_rank,
+            pp_rank=pipeline_parallel_rank,
+            tp_rank=tp_rank,
+            dp_rank=dp_rank,
+        )
+        if tp_rank != 0 or dp_rank != 0:
+            strategy_trace_path = None
+    strategy_trace = StrategyTrace(
+        enabled=bool(strategy_trace_path),
+        pp_rank=pipeline_parallel_rank,
+        flush_path=strategy_trace_path,
+    )
+
+    def current_memory_mb():
+        if not strategy_trace.enabled or not torch.cuda.is_available():
+            return None
+        return float(torch.cuda.memory_allocated() / (1024 * 1024))
+
+    def strategy_trace_hook(name, elapsed_ms, **metadata):
+        strategy_trace.record(name, elapsed_ms, memory_mb=current_memory_mb(), **metadata)
+
+    config.pipeline_strategy_trace_hook = strategy_trace_hook if strategy_trace.enabled else None
+
+    def observed_forward_step(
+        input_tensor,
+        checkpoint_activations_microbatch,
+        is_first_microbatch,
+        current_microbatch,
+        phase,
+    ):
+        kwargs = dict(
+            forward_step_func=forward_step_func,
+            data_iterator=data_iterator,
+            model=model,
+            num_microbatches=num_microbatches,
+            input_tensor=input_tensor,
+            forward_data_store=forward_data_store,
+            config=config,
+            cp_group_size=cp_size,
+            collect_non_loss_data=collect_non_loss_data,
+            checkpoint_activations_microbatch=checkpoint_activations_microbatch,
+            is_first_microbatch=is_first_microbatch,
+            current_microbatch=current_microbatch,
+            is_last_stage=p2p_communicator.is_pp_last_stage,
+        )
+        if not strategy_trace.enabled:
+            return forward_step(**kwargs)
+        with CudaTimer() as timer:
+            result = forward_step(**kwargs)
+        strategy_trace.record(
+            "forward_step",
+            timer.elapsed_ms,
+            microbatch_id=current_microbatch,
+            model_chunk_id=0,
+            memory_mb=current_memory_mb(),
+            phase=phase,
+            task_id=f"F:r{pipeline_parallel_rank}:c0:m{current_microbatch}",
+            scheduled_at=time.time(),
+        )
+        return result
+
+    def observed_backward_step(input_tensor, output_tensor, output_tensor_grad, microbatch_id, phase):
+        if not strategy_trace.enabled:
+            return backward_func(input_tensor, output_tensor, output_tensor_grad, config)
+        with CudaTimer() as timer:
+            result = backward_func(input_tensor, output_tensor, output_tensor_grad, config)
+        strategy_trace.record(
+            "backward_step",
+            timer.elapsed_ms,
+            microbatch_id=microbatch_id,
+            model_chunk_id=0,
+            memory_mb=current_memory_mb(),
+            phase=phase,
+            task_id=f"B:r{pipeline_parallel_rank}:c0:m{microbatch_id}",
+            scheduled_at=time.time(),
+        )
+        return result
+
     # Run warmup forward passes.
     for i in range(num_warmup_microbatches):
         # Decide to checkpoint all layers' activations of the current micro-batch
@@ -2618,20 +2703,12 @@ def forward_backward_pipelining_without_interleaving(
         input_tensor = p2p_communicator.recv_forward(
             recv_tensor_shapes, p2p_communicator.is_pp_first_stage
         )
-        output_tensor, num_tokens = forward_step(
-            forward_step_func,
-            data_iterator,
-            model,
-            num_microbatches,
+        output_tensor, num_tokens = observed_forward_step(
             input_tensor,
-            forward_data_store,
-            config,
-            cp_group_size=cp_size,
-            collect_non_loss_data=collect_non_loss_data,
-            checkpoint_activations_microbatch=checkpoint_activations_microbatch,
-            is_first_microbatch=check_first_val_step(first_val_step, forward_only, i == 0),
-            current_microbatch=i,
-            is_last_stage=p2p_communicator.is_pp_last_stage,
+            checkpoint_activations_microbatch,
+            check_first_val_step(first_val_step, forward_only, i == 0),
+            i,
+            "warmup",
         )
         p2p_communicator.send_forward(output_tensor, p2p_communicator.is_pp_last_stage)
         total_num_tokens += num_tokens
@@ -2661,22 +2738,15 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
-        output_tensor, num_tokens = forward_step(
-            forward_step_func,
-            data_iterator,
-            model,
-            num_microbatches,
+        forward_microbatch_id = i + num_warmup_microbatches
+        output_tensor, num_tokens = observed_forward_step(
             input_tensor,
-            forward_data_store,
-            config,
-            cp_group_size=cp_size,
-            collect_non_loss_data=collect_non_loss_data,
-            checkpoint_activations_microbatch=checkpoint_activations_microbatch,
-            is_first_microbatch=check_first_val_step(
+            checkpoint_activations_microbatch,
+            check_first_val_step(
                 first_val_step, forward_only, (i == 0) and (num_warmup_microbatches == 0)
             ),
-            current_microbatch=i + num_warmup_microbatches,
-            is_last_stage=p2p_communicator.is_pp_last_stage,
+            forward_microbatch_id,
+            "steady",
         )
         total_num_tokens += num_tokens
 
@@ -2707,8 +2777,12 @@ def forward_backward_pipelining_without_interleaving(
                 if config.grad_sync_func is None or p2p_communicator.is_pp_first_stage:
                     enable_grad_sync()
 
-            input_tensor_grad = backward_func(
-                input_tensor, output_tensor, output_tensor_grad, config
+            input_tensor_grad = observed_backward_step(
+                input_tensor,
+                output_tensor,
+                output_tensor_grad,
+                i,
+                "steady",
             )
 
             if last_iteration:
@@ -2741,8 +2815,13 @@ def forward_backward_pipelining_without_interleaving(
                 send_tensor_shapes, p2p_communicator.is_pp_last_stage
             )
 
-            input_tensor_grad = backward_func(
-                input_tensor, output_tensor, output_tensor_grad, config
+            backward_microbatch_id = num_microbatches_remaining + i
+            input_tensor_grad = observed_backward_step(
+                input_tensor,
+                output_tensor,
+                output_tensor_grad,
+                backward_microbatch_id,
+                "cooldown",
             )
 
             p2p_communicator.send_backward(input_tensor_grad, p2p_communicator.is_pp_first_stage)
@@ -2779,5 +2858,7 @@ def forward_backward_pipelining_without_interleaving(
 
     if hasattr(config, 'cuda_graph_impl') and config.cuda_graph_impl == "local":
         create_cudagraphs()
+
+    strategy_trace.flush()
 
     return forward_data_store

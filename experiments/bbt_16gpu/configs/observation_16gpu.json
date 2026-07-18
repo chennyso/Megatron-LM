@@ -1,0 +1,124 @@
+{
+  "study_name": "dual-node-16x5090-observation",
+  "infrastructure": {
+    "namespace": "default",
+    "nodes": ["g5", "g6"],
+    "image": "harbor.bbt.sspu.edu.cn/nvcr/nvidia/pytorch:26.04-py3",
+    "workspace_pvc": "seampipe-paper-workspace",
+    "model_pvc": "chenny-models-nfs",
+    "result_root": "/workspace/runs/observation_16gpu",
+    "git_remote": "https://github.com/chennyso/Megatron-LM.git"
+  },
+  "workload": {
+    "model_id": "qwen3-32b",
+    "model_path": "/models/qwen3-32B",
+    "dataset_id": "formal_public_fineweb_edu_v1",
+    "data_path": "/workspace/datasets/fineweb_edu/formal_slice/fineweb_edu_formal_text_document",
+    "tensor_parallel_size": 2,
+    "pipeline_parallel_size": 8,
+    "sequence_length": 4096,
+    "micro_batch_size": 1,
+    "global_batch_size": 16,
+    "warmup_steps": 20,
+    "measure_steps": 50,
+    "precision": "bf16",
+    "recompute": "full-uniform-1",
+    "fsdp": false
+  },
+  "repeat_policy": {
+    "throughput_repeats": 5,
+    "trace_repeats": 1,
+    "nsys_repeats": 1,
+    "randomization_seed": 20260718
+  },
+  "cases": {
+    "screen_1f1b": {
+      "phase": "screening",
+      "schedule": "1f1b",
+      "vpp_size": 1,
+      "overlap_p2p": false,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": null
+    },
+    "screen_vpp2_overlap": {
+      "phase": "screening",
+      "schedule": "vpp2",
+      "vpp_size": 2,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8
+    },
+    "screen_vpp4_overlap": {
+      "phase": "screening",
+      "schedule": "vpp4",
+      "vpp_size": 4,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8
+    },
+    "screen_vpp8_overlap": {
+      "phase": "screening",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8
+    },
+    "diag_vpp2_no_overlap": {
+      "phase": "diagnostic",
+      "schedule": "vpp2",
+      "vpp_size": 2,
+      "overlap_p2p": false,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8
+    },
+    "diag_vpp4_no_overlap": {
+      "phase": "diagnostic",
+      "schedule": "vpp4",
+      "vpp_size": 4,
+      "overlap_p2p": false,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8
+    },
+    "diag_vpp8_no_overlap": {
+      "phase": "diagnostic",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": false,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8
+    },
+    "tune_vpp4_group16": {
+      "phase": "tuning",
+      "schedule": "vpp4",
+      "vpp_size": 4,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 16
+    },
+    "tune_vpp8_group16": {
+      "phase": "tuning",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 16
+    },
+    "tune_vpp4_warmup_flush": {
+      "phase": "tuning",
+      "schedule": "vpp4",
+      "vpp_size": 4,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": true,
+      "microbatch_group_size": 8
+    },
+    "tune_vpp8_warmup_flush": {
+      "phase": "tuning",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": true,
+      "microbatch_group_size": 8
+    }
+  }
+}
