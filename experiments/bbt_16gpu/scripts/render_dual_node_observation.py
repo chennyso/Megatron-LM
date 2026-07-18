@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -22,7 +23,10 @@ def dns_label(value: str, limit: int = 50) -> str:
     cleaned = re.sub(r"-+", "-", cleaned)
     if not cleaned:
         raise ValueError(f"cannot derive a DNS label from {value!r}")
-    return cleaned[:limit].rstrip("-")
+    if len(cleaned) <= limit:
+        return cleaned
+    digest = hashlib.sha1(cleaned.encode("utf-8")).hexdigest()[:8]
+    return f"{cleaned[: limit - len(digest) - 1].rstrip('-')}-{digest}"
 
 
 def q(value: object) -> str:

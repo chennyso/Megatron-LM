@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import subprocess
@@ -22,7 +23,11 @@ def job_name(run_id: str, case_id: str, repeat_id: int) -> str:
 
     value = f"obs16-{run_id}-{case_id}-r{repeat_id}".lower()
     cleaned = re.sub(r"[^a-z0-9-]+", "-", value).strip("-")
-    return re.sub(r"-+", "-", cleaned)[:50].rstrip("-")
+    cleaned = re.sub(r"-+", "-", cleaned)
+    if len(cleaned) <= 50:
+        return cleaned
+    digest = hashlib.sha1(cleaned.encode("utf-8")).hexdigest()[:8]
+    return f"{cleaned[:41].rstrip('-')}-{digest}"
 
 
 def kubectl_json(args: list[str]) -> dict:
