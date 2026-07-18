@@ -51,6 +51,14 @@
     "max_iterations": 200,
     "randomization_seed": 20260718
   },
+  "compute_comm_motifs": {
+    "message_size_bytes": 41943040,
+    "comm_iterations": 8,
+    "compute_iterations": 1,
+    "warmup_iterations": 2,
+    "repetitions": 5,
+    "randomization_seed": 20260718
+  },
   "datasets": {
     "proxy_public_subset_v1": {
       "id": "proxy_public_subset_v1",

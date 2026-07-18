@@ -55,3 +55,15 @@ def test_iteration_count_respects_byte_target_and_bounds():
     assert module.iteration_count(1, cfg) == 20
     assert module.iteration_count(256, cfg) == 4
     assert module.iteration_count(4096, cfg) == 4
+
+
+def test_payload_samples_change_between_process_local_repeats():
+    module = load_module()
+    positions = module.sample_positions(1024)
+    repeat_one = [module.payload_value(3, 1, index) for index, _ in enumerate(positions)]
+    repeat_two = [module.payload_value(3, 2, index) for index, _ in enumerate(positions)]
+
+    assert len(positions) == 7
+    assert len(set(repeat_one)) == len(repeat_one)
+    assert repeat_one != repeat_two
+    assert max(repeat_two) < 256

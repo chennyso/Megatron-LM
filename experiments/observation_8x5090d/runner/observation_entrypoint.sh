@@ -92,6 +92,10 @@ if [ "${PHASE}" = "motif" ]; then
     experiments/observation_8x5090d/scripts/benchmark_concurrent_motifs.py \
     --matrix-path "${MATRIX_PATH}" \
     --output-dir "${MOTIF_DIR}"
+  torchrun --standalone --nproc_per_node=8 \
+    experiments/observation_8x5090d/scripts/benchmark_compute_comm_overlap.py \
+    --matrix-path "${MATRIX_PATH}" \
+    --output-dir "${MOTIF_DIR}/compute_comm"
   exit 0
 fi
 

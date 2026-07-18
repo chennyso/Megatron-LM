@@ -188,7 +188,9 @@ def summarize(rows: list[dict]) -> list[dict]:
                 continue
             mean = statistics.fmean(values)
             std = statistics.stdev(values) if len(values) > 1 else 0.0
-            ci95 = 1.96 * std / math.sqrt(len(values)) if len(values) > 1 else 0.0
+            # Five process-local repeats are a shakeout statistic. Use the
+            # two-sided Student-t critical value for df=4 instead of 1.96.
+            ci95 = 2.776 * std / math.sqrt(len(values)) if len(values) > 1 else 0.0
             summary.update(
                 {
                     f"{metric}_mean": mean,
@@ -208,14 +210,32 @@ def reduce_max(value: float, device: torch.device) -> float:
     return float(tensor.item())
 
 
+def sample_positions(elements: int) -> list[int]:
+    return sorted(
+        {
+            0,
+            min(1, elements - 1),
+            elements // 4,
+            elements // 2,
+            (3 * elements) // 4,
+            max(0, elements - 2),
+            elements - 1,
+        }
+    )
+
+
+def payload_value(src: int, nonce: int, sample_index: int) -> float:
+    return float(nonce * 16 + src * 2 + sample_index)
+
+
 def validate_payload(
-    recv_buffers: dict[int, torch.Tensor], device: torch.device
+    recv_buffers: dict[int, torch.Tensor], nonce: int, device: torch.device
 ) -> bool:
     local_valid = True
     for src, tensor in recv_buffers.items():
-        expected = float(src + 1)
-        local_valid = local_valid and float(tensor[0].item()) == expected
-        local_valid = local_valid and float(tensor[-1].item()) == expected
+        for sample_index, position in enumerate(sample_positions(tensor.numel())):
+            expected = payload_value(src, nonce, sample_index)
+            local_valid = local_valid and float(tensor[position].item()) == expected
     valid = torch.tensor([int(local_valid)], dtype=torch.int32, device=device)
     dist.all_reduce(valid, op=dist.ReduceOp.MIN)
     return bool(valid.item())
@@ -226,6 +246,7 @@ def run_motif(
     size_bytes: int,
     iterations: int,
     warmup_iterations: int,
+    payload_nonce: int,
     device: torch.device,
 ) -> tuple[float, float, bool]:
     rank = dist.get_rank()
@@ -233,10 +254,15 @@ def run_motif(
     outgoing = any(src == rank for src, _ in motif.edges)
     incoming_sources = sorted(src for src, dst in motif.edges if dst == rank)
     send_buffer = (
-        torch.full((elements,), rank + 1.0, dtype=torch.bfloat16, device=device)
+        torch.full(
+            (elements,), payload_value(rank, payload_nonce, 0), dtype=torch.bfloat16, device=device
+        )
         if outgoing
         else None
     )
+    if send_buffer is not None:
+        for sample_index, position in enumerate(sample_positions(elements)):
+            send_buffer[position] = payload_value(rank, payload_nonce, sample_index)
     recv_buffers = {
         src: torch.full((elements,), -1.0, dtype=torch.bfloat16, device=device)
         for src in incoming_sources
@@ -274,7 +300,7 @@ def run_motif(
     local_device_ms = float(start_event.elapsed_time(end_event))
     wall_ms = reduce_max(local_wall_ms, device)
     device_ms = reduce_max(local_device_ms, device)
-    payload_valid = validate_payload(recv_buffers, device)
+    payload_valid = validate_payload(recv_buffers, payload_nonce, device)
     dist.barrier()
     return wall_ms, device_ms, payload_valid
 
@@ -320,7 +346,7 @@ def capture_text(command: list[str]) -> str:
     return result.stdout + result.stderr
 
 
-def write_metadata(output_dir: Path, cfg: dict) -> None:
+def write_metadata(output_dir: Path, cfg: dict, rank_map: list[dict]) -> None:
     topology = capture_text(["nvidia-smi", "topo", "-m"])
     inventory = capture_text(
         [
@@ -339,6 +365,7 @@ def write_metadata(output_dir: Path, cfg: dict) -> None:
         "cuda": torch.version.cuda,
         "nccl": torch.cuda.nccl.version(),
         "world_size": dist.get_world_size(),
+        "rank_map": rank_map,
         "nccl_p2p_disable": os.environ.get("NCCL_P2P_DISABLE", "unset"),
         "topology_sha256": hashlib.sha256(topology.encode("utf-8")).hexdigest(),
         "config": cfg,
@@ -352,7 +379,11 @@ def write_metadata(output_dir: Path, cfg: dict) -> None:
 def main() -> int:
     args = parse_args()
     matrix = json.loads(Path(args.matrix_path).read_text(encoding="utf-8"))
-    cfg = matrix["interference_motifs"]
+    cfg = dict(matrix["interference_motifs"])
+    if os.environ.get("OBS_REPEAT_COUNT_OVERRIDE"):
+        cfg["repetitions"] = int(os.environ["OBS_REPEAT_COUNT_OVERRIDE"])
+    if os.environ.get("OBS_SEED_BASE_OVERRIDE"):
+        cfg["randomization_seed"] = int(os.environ["OBS_SEED_BASE_OVERRIDE"])
     if int(os.environ.get("WORLD_SIZE", "1")) != 8:
         raise RuntimeError("concurrent motif benchmark requires exactly eight ranks")
 
@@ -362,15 +393,35 @@ def main() -> int:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     output_dir = Path(args.output_dir)
+    rank_query = capture_text(
+        [
+            "nvidia-smi",
+            "-i",
+            str(local_rank),
+            "--query-gpu=uuid,pci.bus_id,name",
+            "--format=csv,noheader",
+        ]
+    ).strip()
+    rank_info = {
+        "global_rank": rank,
+        "local_rank": local_rank,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        "nvidia_smi_identity": rank_query,
+    }
+    rank_map: list[dict | None] = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(rank_map, rank_info)
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
-        write_metadata(output_dir, cfg)
+        for stale_name in ("DONE", "motif_raw.csv", "motif_raw.jsonl", "motif_summary.csv"):
+            stale_path = output_dir / stale_name
+            if stale_path.exists():
+                stale_path.unlink()
+        write_metadata(output_dir, cfg, [item for item in rank_map if item is not None])
     dist.barrier()
 
     primitives, concurrent = motif_catalog()
     rows: list[dict] = []
     raw_jsonl = output_dir / "motif_raw.jsonl"
-    baseline_times: dict[tuple[int, int, str], float] = {}
     for size_bytes in cfg["message_sizes_bytes"]:
         iterations = iteration_count(int(size_bytes), cfg)
         for repeat in range(1, int(cfg["repetitions"]) + 1):
@@ -379,60 +430,44 @@ def main() -> int:
             rng = random.Random(int(cfg["randomization_seed"]) + int(size_bytes) + repeat)
             rng.shuffle(primitive_order)
             rng.shuffle(concurrent_order)
+            primitive_results: dict[str, tuple[float, float, bool]] = {}
+            concurrent_results: dict[str, tuple[float, float, bool]] = {}
+            blocks = (
+                (("primitive", primitive_order), ("concurrent", concurrent_order))
+                if repeat % 2 == 1
+                else (("concurrent", concurrent_order), ("primitive", primitive_order))
+            )
+            for block_name, motifs in blocks:
+                for motif in motifs:
+                    torch.cuda.nvtx.range_push(
+                        f"motif={motif.motif_id};bytes={size_bytes};repeat={repeat}"
+                    )
+                    try:
+                        result = run_motif(
+                            motif,
+                            int(size_bytes),
+                            iterations,
+                            int(cfg["warmup_iterations"]),
+                            repeat,
+                            device,
+                        )
+                    finally:
+                        torch.cuda.nvtx.range_pop()
+                    if block_name == "primitive":
+                        primitive_results[motif.motif_id] = result
+                    else:
+                        concurrent_results[motif.motif_id] = result
 
-            for motif in primitive_order:
-                torch.cuda.nvtx.range_push(
-                    f"motif={motif.motif_id};bytes={size_bytes};repeat={repeat}"
-                )
-                try:
-                    wall_ms, device_ms, valid = run_motif(
-                        motif,
-                        int(size_bytes),
-                        iterations,
-                        int(cfg["warmup_iterations"]),
-                        device,
-                    )
-                finally:
-                    torch.cuda.nvtx.range_pop()
-                baseline_times[(int(size_bytes), repeat, motif.motif_id)] = wall_ms
-                if rank == 0:
-                    record = record_for(
-                        motif,
-                        int(size_bytes),
-                        iterations,
-                        repeat,
-                        wall_ms,
-                        device_ms,
-                        valid,
-                        {motif.motif_id: wall_ms},
-                    )
-                    rows.append(record)
-                    with raw_jsonl.open("a", encoding="utf-8") as handle:
-                        handle.write(json.dumps(record, sort_keys=True) + "\n")
-                    print(
-                        "FORGEPIPE_MOTIF_RESULT " + json.dumps(record, sort_keys=True),
-                        flush=True,
-                    )
-
-            for motif in concurrent_order:
-                torch.cuda.nvtx.range_push(
-                    f"motif={motif.motif_id};bytes={size_bytes};repeat={repeat}"
-                )
-                try:
-                    wall_ms, device_ms, valid = run_motif(
-                        motif,
-                        int(size_bytes),
-                        iterations,
-                        int(cfg["warmup_iterations"]),
-                        device,
-                    )
-                finally:
-                    torch.cuda.nvtx.range_pop()
-                if rank == 0:
-                    baselines = {
-                        name: baseline_times[(int(size_bytes), repeat, name)]
-                        for name in motif.primitive_ids
-                    }
+            if rank == 0:
+                for motif in primitive_order + concurrent_order:
+                    if motif.motif_id in primitive_results:
+                        wall_ms, device_ms, valid = primitive_results[motif.motif_id]
+                        baselines = {motif.motif_id: wall_ms}
+                    else:
+                        wall_ms, device_ms, valid = concurrent_results[motif.motif_id]
+                        baselines = {
+                            name: primitive_results[name][0] for name in motif.primitive_ids
+                        }
                     record = record_for(
                         motif,
                         int(size_bytes),
