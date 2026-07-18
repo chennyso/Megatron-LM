@@ -97,12 +97,12 @@ def render_task(
 {env_block(task_env, spaces=10)}
           resources:
             requests:
-              cpu: "24"
+              cpu: "16"
               memory: 160Gi
               nvidia.com/gpu: "8"
               nvidia.com/mlnxnics: "1"
             limits:
-              cpu: "48"
+              cpu: "32"
               memory: 240Gi
               nvidia.com/gpu: "8"
               nvidia.com/mlnxnics: "1"
