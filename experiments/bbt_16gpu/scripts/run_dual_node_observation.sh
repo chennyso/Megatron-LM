@@ -47,6 +47,7 @@ if ! python3 -c 'import sentencepiece, transformers' >/dev/null 2>&1; then
     'transformers==4.51.0' \
     'sentencepiece==0.2.0'
 fi
+python3 -m pip freeze > "${NODE_DIR}/pip_freeze.txt"
 
 test -f "${MODEL_PATH}/config.json"
 test -f "${MODEL_PATH}/tokenizer.json"
@@ -83,6 +84,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONUNBUFFERED=1
+export TOKENIZERS_PARALLELISM=false
 
 nvidia-smi --query-gpu=index,name,uuid,memory.total,memory.used,utilization.gpu,power.limit \
   --format=csv > "${NODE_DIR}/gpu_inventory.csv"
