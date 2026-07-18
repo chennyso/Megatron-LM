@@ -35,6 +35,7 @@ trap on_exit EXIT
 echo "OBSERVATION_START case=${CASE_ID} repeat=${REPEAT_ID} node_rank=${NODE_RANK}"
 echo "host=$(hostname) date=$(date -Iseconds)"
 
+export GIT_SSL_NO_VERIFY=1
 rm -rf "${CODE_DIR}"
 git clone --filter=blob:none --no-checkout "${GIT_REMOTE}" "${CODE_DIR}"
 git -C "${CODE_DIR}" fetch --depth=1 origin "${GIT_REF}"
