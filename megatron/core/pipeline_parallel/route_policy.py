@@ -47,6 +47,211 @@ class P2PAction:
     signature: MessageSignature
 
 
+@dataclass(frozen=True, order=True)
+class RouteEndpointKey:
+    """Identity of one stage-local communication operation."""
+
+    stage: LogicalStage
+    direction: str
+    role: str
+
+
+@dataclass(frozen=True)
+class RoutePeer:
+    """Resolved dependency for one route endpoint.
+
+    ``kind`` distinguishes a model boundary, a same-rank dependency, and a
+    dependency that must be lowered to distributed P2P. Only remote entries
+    carry a message signature.
+    """
+
+    key: RouteEndpointKey
+    kind: str
+    edge_id: int | None
+    peer_stage: LogicalStage | None
+    peer_rank: int | None
+    signature: MessageSignature | None
+
+
+@dataclass(frozen=True)
+class LayerAssignment:
+    """Contiguous global layer interval assigned to one logical stage."""
+
+    stage: LogicalStage
+    start_layer: int
+    end_layer: int
+
+    @property
+    def num_layers(self) -> int:
+        return self.end_layer - self.start_layer
+
+
+class RoutePeerMap:
+    """Deterministically lower logical route dependencies to stage-local peers."""
+
+    _TENSOR_KIND = {
+        "forward": "activation",
+        "backward": "activation_grad",
+    }
+
+    def __init__(self, route: "PipelineRoute") -> None:
+        self.route = route
+        self._position_by_stage = {
+            stage: position for position, stage in enumerate(route.stages)
+        }
+        self._edge_by_pair = {
+            (edge.source, edge.target): edge for edge in route.forward_edges
+        }
+        self._peers = {
+            RouteEndpointKey(stage, direction, role): self._resolve(
+                stage, direction, role
+            )
+            for stage in route.stages
+            for direction in ("forward", "backward")
+            for role in ("send", "recv")
+        }
+        self.verify()
+
+    def _neighbor(
+        self, stage: LogicalStage, direction: str, role: str
+    ) -> LogicalStage | None:
+        if direction not in self._TENSOR_KIND:
+            raise ValueError("direction must be 'forward' or 'backward'")
+        if role not in ("send", "recv"):
+            raise ValueError("role must be 'send' or 'recv'")
+        follows_model_order = (direction, role) in (
+            ("forward", "send"),
+            ("backward", "recv"),
+        )
+        position = self._position_by_stage[stage]
+        peer_position = position + 1 if follows_model_order else position - 1
+        if peer_position < 0 or peer_position >= len(self.route.stages):
+            return None
+        return self.route.stages[peer_position]
+
+    def _resolve(self, stage: LogicalStage, direction: str, role: str) -> RoutePeer:
+        key = RouteEndpointKey(stage, direction, role)
+        peer_stage = self._neighbor(stage, direction, role)
+        if peer_stage is None:
+            return RoutePeer(key, "terminal", None, None, None, None)
+
+        if self._position_by_stage[stage] < self._position_by_stage[peer_stage]:
+            forward_pair = (stage, peer_stage)
+        else:
+            forward_pair = (peer_stage, stage)
+        edge = self._edge_by_pair[forward_pair]
+        if peer_stage.physical_rank == stage.physical_rank:
+            return RoutePeer(
+                key,
+                "local",
+                edge.edge_id,
+                peer_stage,
+                peer_stage.physical_rank,
+                None,
+            )
+
+        if role == "send":
+            source_rank, target_rank = stage.physical_rank, peer_stage.physical_rank
+        else:
+            source_rank, target_rank = peer_stage.physical_rank, stage.physical_rank
+        signature = MessageSignature(
+            edge_id=edge.edge_id,
+            direction=direction,
+            tensor_kind=self._TENSOR_KIND[direction],
+            source_rank=source_rank,
+            target_rank=target_rank,
+        )
+        return RoutePeer(
+            key,
+            "remote",
+            edge.edge_id,
+            peer_stage,
+            peer_stage.physical_rank,
+            signature,
+        )
+
+    def get(
+        self, stage: LogicalStage, direction: str, role: str
+    ) -> RoutePeer:
+        """Return the resolved endpoint dependency for one logical stage."""
+        key = RouteEndpointKey(stage, direction, role)
+        try:
+            return self._peers[key]
+        except KeyError as error:
+            if stage not in self.route.stages:
+                raise ValueError(f"stage is not present in route: {stage}") from error
+            raise ValueError(f"invalid route endpoint key: {key}") from error
+
+    def lower_group(
+        self, keys: Sequence[RouteEndpointKey]
+    ) -> tuple[RoutePeer, ...]:
+        """Lower a combined communication call without assuming one shared peer."""
+        if len(set(keys)) != len(keys):
+            raise ValueError("combined communication group contains duplicate operations")
+        return tuple(self.get(key.stage, key.direction, key.role) for key in keys)
+
+    def verify(self) -> None:
+        """Check boundary, locality, and exact forward/backward edge reversal."""
+        allowed_kinds = {"terminal", "local", "remote"}
+        for key, peer in self._peers.items():
+            if peer.kind not in allowed_kinds:
+                raise ValueError(f"unknown route peer kind: {peer.kind}")
+            if key.stage.physical_rank != peer.key.stage.physical_rank:
+                raise ValueError(f"route peer key changed physical rank: {peer}")
+            if peer.kind == "terminal":
+                if any(
+                    item is not None
+                    for item in (peer.edge_id, peer.peer_stage, peer.peer_rank, peer.signature)
+                ):
+                    raise ValueError(f"terminal endpoint carries a dependency: {peer}")
+                continue
+            if peer.peer_stage is None or peer.edge_id is None:
+                raise ValueError(f"non-terminal endpoint lacks an edge: {peer}")
+            if peer.peer_rank != peer.peer_stage.physical_rank:
+                raise ValueError(f"peer rank does not match peer stage: {peer}")
+            if peer.kind == "local" and peer.signature is not None:
+                raise ValueError(f"local dependency must not emit P2P: {peer}")
+            if peer.kind == "remote":
+                if peer.signature is None:
+                    raise ValueError(f"remote dependency lacks a signature: {peer}")
+                if peer.peer_rank == key.stage.physical_rank:
+                    raise ValueError(f"remote dependency resolves to the local rank: {peer}")
+
+        for edge in self.route.forward_edges:
+            forward_send = self.get(edge.source, "forward", "send")
+            forward_recv = self.get(edge.target, "forward", "recv")
+            backward_send = self.get(edge.target, "backward", "send")
+            backward_recv = self.get(edge.source, "backward", "recv")
+            kinds = {
+                forward_send.kind,
+                forward_recv.kind,
+                backward_send.kind,
+                backward_recv.kind,
+            }
+            expected_kind = (
+                "local"
+                if edge.source.physical_rank == edge.target.physical_rank
+                else "remote"
+            )
+            if kinds != {expected_kind}:
+                raise ValueError(f"edge locality is inconsistent for edge {edge.edge_id}")
+            if expected_kind == "remote":
+                if forward_send.signature != forward_recv.signature:
+                    raise ValueError(f"forward signatures disagree for edge {edge.edge_id}")
+                if backward_send.signature != backward_recv.signature:
+                    raise ValueError(f"backward signatures disagree for edge {edge.edge_id}")
+                forward_signature = forward_send.signature
+                backward_signature = backward_send.signature
+                if (
+                    forward_signature.source_rank,
+                    forward_signature.target_rank,
+                ) != (
+                    backward_signature.target_rank,
+                    backward_signature.source_rank,
+                ):
+                    raise ValueError(f"backward P2P does not reverse edge {edge.edge_id}")
+
+
 @dataclass(frozen=True)
 class PipelineRoute:
     """A total logical ordering of all virtual stages in a pipeline."""
@@ -169,6 +374,57 @@ class PipelineRoute:
         """Return the next logical stage, including local chunk transitions."""
         index = self.stages.index(stage)
         return self.stages[index + 1] if index + 1 < len(self.stages) else None
+
+    @property
+    def first_stage(self) -> LogicalStage:
+        """Return the route-defined model input stage."""
+        return self.stages[0]
+
+    @property
+    def last_stage(self) -> LogicalStage:
+        """Return the route-defined loss/output stage."""
+        return self.stages[-1]
+
+    def is_first_stage(self, stage: LogicalStage) -> bool:
+        """Return whether a logical stage owns the model input boundary."""
+        return stage == self.first_stage
+
+    def is_last_stage(self, stage: LogicalStage) -> bool:
+        """Return whether a logical stage owns the model output boundary."""
+        return stage == self.last_stage
+
+    def peer_map(self) -> RoutePeerMap:
+        """Build the verified stage-local communication map for this route."""
+        return RoutePeerMap(self)
+
+    def assign_layers(self, layer_counts: Sequence[int]) -> tuple[LayerAssignment, ...]:
+        """Assign contiguous model layers in route order using explicit cut sizes."""
+        if len(layer_counts) != len(self.stages):
+            raise ValueError("layer_counts must contain one entry per logical stage")
+        if any(
+            not isinstance(count, int) or isinstance(count, bool) or count < 1
+            for count in layer_counts
+        ):
+            raise ValueError("each logical stage must receive a positive integer layer count")
+
+        assignments = []
+        start_layer = 0
+        for stage, count in zip(self.stages, layer_counts):
+            assignments.append(LayerAssignment(stage, start_layer, start_layer + count))
+            start_layer += count
+        return tuple(assignments)
+
+    def assign_balanced_layers(self, num_layers: int) -> tuple[LayerAssignment, ...]:
+        """Generate a deterministic near-uniform layout in logical route order."""
+        if not isinstance(num_layers, int) or isinstance(num_layers, bool) or num_layers < len(
+            self.stages
+        ):
+            raise ValueError("num_layers must provide at least one layer per logical stage")
+        quotient, remainder = divmod(num_layers, len(self.stages))
+        counts = tuple(
+            quotient + (position < remainder) for position in range(len(self.stages))
+        )
+        return self.assign_layers(counts)
 
     def cross_node_edges(self, node_by_rank: Sequence[Hashable]) -> tuple[PipelineEdge, ...]:
         """Return forward edges whose physical endpoints are on different nodes."""
@@ -308,3 +564,4 @@ class PipelineRoute:
         self.verify_backward_is_reverse()
         self.verify_send_recv_signatures("forward", "activation")
         self.verify_send_recv_signatures("backward", "activation_grad")
+        self.peer_map().verify()

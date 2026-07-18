@@ -32,6 +32,21 @@ class PipelineMessageTag:
     tensor_kind: str
 
 
+@dataclass(frozen=True)
+class PipelineP2PPeers:
+    """Operation-specific global ranks for a pipeline communication call.
+
+    A combined call may send and receive tensors belonging to different
+    logical stages, so each operation has an independent peer. ``None`` is
+    valid only when the corresponding operation is inactive.
+    """
+
+    send_forward: int | None = None
+    recv_forward: int | None = None
+    send_backward: int | None = None
+    recv_backward: int | None = None
+
+
 class _P2PTraceTimer:
     """Small CUDA-aware timer used only when strategy tracing is enabled."""
 
@@ -73,26 +88,33 @@ def _batched_p2p_ops(
     group: torch.distributed.ProcessGroup,
     prev_pipeline_rank: int,
     next_pipeline_rank: int,
+    peers: PipelineP2PPeers | None = None,
 ):
+    peers = peers or PipelineP2PPeers(
+        send_forward=next_pipeline_rank,
+        recv_forward=prev_pipeline_rank,
+        send_backward=prev_pipeline_rank,
+        recv_backward=next_pipeline_rank,
+    )
     ops = []
     if tensor_send_prev is not None:
         send_prev_op = torch.distributed.P2POp(
-            torch.distributed.isend, tensor_send_prev, prev_pipeline_rank, group
+            torch.distributed.isend, tensor_send_prev, peers.send_backward, group
         )
         ops.append(send_prev_op)
     if tensor_recv_prev is not None:
         recv_prev_op = torch.distributed.P2POp(
-            torch.distributed.irecv, tensor_recv_prev, prev_pipeline_rank, group
+            torch.distributed.irecv, tensor_recv_prev, peers.recv_forward, group
         )
         ops.append(recv_prev_op)
     if tensor_send_next is not None:
         send_next_op = torch.distributed.P2POp(
-            torch.distributed.isend, tensor_send_next, next_pipeline_rank, group
+            torch.distributed.isend, tensor_send_next, peers.send_forward, group
         )
         ops.append(send_next_op)
     if tensor_recv_next is not None:
         recv_next_op = torch.distributed.P2POp(
-            torch.distributed.irecv, tensor_recv_next, next_pipeline_rank, group
+            torch.distributed.irecv, tensor_recv_next, peers.recv_backward, group
         )
         ops.append(recv_next_op)
     if len(ops) > 0:
@@ -111,7 +133,14 @@ def _p2p_ops(
     group: torch.distributed.ProcessGroup,
     prev_pipeline_rank: int,
     next_pipeline_rank: int,
+    peers: PipelineP2PPeers | None = None,
 ):
+    peers = peers or PipelineP2PPeers(
+        send_forward=next_pipeline_rank,
+        recv_forward=prev_pipeline_rank,
+        send_backward=prev_pipeline_rank,
+        recv_backward=next_pipeline_rank,
+    )
     reqs = {}
     even_send_odd_recv_group = group
     if group.size() == 2 and torch.distributed.get_backend(group) != 'ucc':
@@ -129,50 +158,50 @@ def _p2p_ops(
     if group.rank() % 2 == 0:
         if tensor_send_next is not None:
             send_next_req = torch.distributed.isend(
-                tensor=tensor_send_next, dst=next_pipeline_rank, group=even_send_odd_recv_group
+                tensor=tensor_send_next, dst=peers.send_forward, group=even_send_odd_recv_group
             )
             reqs["send_next"] = send_next_req
 
         if tensor_recv_prev is not None:
             recv_prev_req = torch.distributed.irecv(
-                tensor=tensor_recv_prev, src=prev_pipeline_rank, group=even_recv_odd_send_group
+                tensor=tensor_recv_prev, src=peers.recv_forward, group=even_recv_odd_send_group
             )
             reqs["recv_prev"] = recv_prev_req
 
         if tensor_send_prev is not None:
             send_prev_req = torch.distributed.isend(
-                tensor=tensor_send_prev, dst=prev_pipeline_rank, group=even_send_odd_recv_group
+                tensor=tensor_send_prev, dst=peers.send_backward, group=even_send_odd_recv_group
             )
             reqs["send_prev"] = send_prev_req
 
         if tensor_recv_next is not None:
             recv_next_req = torch.distributed.irecv(
-                tensor=tensor_recv_next, src=next_pipeline_rank, group=even_recv_odd_send_group
+                tensor=tensor_recv_next, src=peers.recv_backward, group=even_recv_odd_send_group
             )
             reqs["recv_next"] = recv_next_req
 
     else:
         if tensor_recv_prev is not None:
             recv_prev_req = torch.distributed.irecv(
-                tensor=tensor_recv_prev, src=prev_pipeline_rank, group=even_send_odd_recv_group
+                tensor=tensor_recv_prev, src=peers.recv_forward, group=even_send_odd_recv_group
             )
             reqs["recv_prev"] = recv_prev_req
 
         if tensor_send_next is not None:
             send_next_req = torch.distributed.isend(
-                tensor=tensor_send_next, dst=next_pipeline_rank, group=even_recv_odd_send_group
+                tensor=tensor_send_next, dst=peers.send_forward, group=even_recv_odd_send_group
             )
             reqs["send_next"] = send_next_req
 
         if tensor_recv_next is not None:
             recv_next_req = torch.distributed.irecv(
-                tensor=tensor_recv_next, src=next_pipeline_rank, group=even_send_odd_recv_group
+                tensor=tensor_recv_next, src=peers.recv_backward, group=even_send_odd_recv_group
             )
             reqs["recv_next"] = recv_next_req
 
         if tensor_send_prev is not None:
             send_prev_req = torch.distributed.isend(
-                tensor=tensor_send_prev, dst=prev_pipeline_rank, group=even_recv_odd_send_group
+                tensor=tensor_send_prev, dst=peers.send_backward, group=even_recv_odd_send_group
             )
             reqs["send_prev"] = send_prev_req
     return reqs
@@ -213,6 +242,32 @@ class P2PCommunicator:
             else None
         )
 
+    def global_rank_for_pipeline_rank(self, pipeline_rank: int | None) -> int | None:
+        """Map a route's pipeline-group rank to the corresponding global rank."""
+        if pipeline_rank is None:
+            return None
+        if pipeline_rank < 0 or pipeline_rank >= self.pp_group.size():
+            raise ValueError(
+                f"pipeline rank {pipeline_rank} is outside group size {self.pp_group.size()}"
+            )
+        return dist.get_global_rank(self.pp_group, pipeline_rank)
+
+    def map_pipeline_peers(
+        self,
+        *,
+        send_forward: int | None = None,
+        recv_forward: int | None = None,
+        send_backward: int | None = None,
+        recv_backward: int | None = None,
+    ) -> PipelineP2PPeers:
+        """Convert operation-specific route peers from group ranks to global ranks."""
+        return PipelineP2PPeers(
+            send_forward=self.global_rank_for_pipeline_rank(send_forward),
+            recv_forward=self.global_rank_for_pipeline_rank(recv_forward),
+            send_backward=self.global_rank_for_pipeline_rank(send_backward),
+            recv_backward=self.global_rank_for_pipeline_rank(recv_backward),
+        )
+
     @property
     def is_pp_first_stage(self) -> bool:
         """Return True if pp first stage."""
@@ -246,7 +301,14 @@ class P2PCommunicator:
             **metadata,
         )
 
-    def _communicate_shapes(self, tensor_send_next, tensor_send_prev, recv_prev, recv_next):
+    def _communicate_shapes(
+        self,
+        tensor_send_next,
+        tensor_send_prev,
+        recv_prev,
+        recv_next,
+        peers: PipelineP2PPeers,
+    ):
         """Communicate tensor shapes between stages. Used to communicate
         tensor shapes before the actual tensor communication happens.
         This is required when the sequence lengths across micro batches
@@ -298,22 +360,34 @@ class P2PCommunicator:
             ops = []
             if send_prev_shape_tensor is not None:
                 send_prev_op = torch.distributed.P2POp(
-                    torch.distributed.isend, send_prev_shape_tensor, self.prev_rank, self.pp_group
+                    torch.distributed.isend,
+                    send_prev_shape_tensor,
+                    peers.send_backward,
+                    self.pp_group,
                 )
                 ops.append(send_prev_op)
             if recv_prev_shape_tensor is not None:
                 recv_prev_op = torch.distributed.P2POp(
-                    torch.distributed.irecv, recv_prev_shape_tensor, self.prev_rank, self.pp_group
+                    torch.distributed.irecv,
+                    recv_prev_shape_tensor,
+                    peers.recv_forward,
+                    self.pp_group,
                 )
                 ops.append(recv_prev_op)
             if send_next_shape_tensor is not None:
                 send_next_op = torch.distributed.P2POp(
-                    torch.distributed.isend, send_next_shape_tensor, self.next_rank, self.pp_group
+                    torch.distributed.isend,
+                    send_next_shape_tensor,
+                    peers.send_forward,
+                    self.pp_group,
                 )
                 ops.append(send_next_op)
             if recv_next_shape_tensor is not None:
                 recv_next_op = torch.distributed.P2POp(
-                    torch.distributed.irecv, recv_next_shape_tensor, self.next_rank, self.pp_group
+                    torch.distributed.irecv,
+                    recv_next_shape_tensor,
+                    peers.recv_backward,
+                    self.pp_group,
                 )
                 ops.append(recv_next_op)
             if len(ops) > 0:
@@ -344,6 +418,7 @@ class P2PCommunicator:
         recv_next: bool,
         tensor_shape: Shape,
         wait_on_reqs: bool = True,
+        peers: PipelineP2PPeers | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Communicate tensors between stages. Used as helper method in other
         communication methods that are used in megatron/schedules.py.
@@ -379,12 +454,32 @@ class P2PCommunicator:
         """
 
         config = self.config
+        custom_peers = peers is not None
+        peers = peers or PipelineP2PPeers(
+            send_forward=self.next_rank,
+            recv_forward=self.prev_rank,
+            send_backward=self.prev_rank,
+            recv_backward=self.next_rank,
+        )
+        active_peers = (
+            ("send_backward", tensor_send_prev is not None, peers.send_backward),
+            ("recv_forward", recv_prev, peers.recv_forward),
+            ("send_forward", tensor_send_next is not None, peers.send_forward),
+            ("recv_backward", recv_next, peers.recv_backward),
+        )
+        for operation, active, peer_rank in active_peers:
+            if active and peer_rank is None:
+                raise ValueError(f"active {operation} operation requires an explicit peer rank")
+        if custom_peers and config.use_ring_exchange_p2p:
+            raise ValueError(
+                "operation-specific pipeline peers are incompatible with ring_exchange"
+            )
         tensor_recv_prev_func = None
         tensor_recv_next_func = None
 
         if config.variable_seq_lengths or config.mtp_standalone:
             recv_prev_shape, recv_next_shape = self._communicate_shapes(
-                tensor_send_next, tensor_send_prev, recv_prev, recv_next
+                tensor_send_next, tensor_send_prev, recv_prev, recv_next, peers
             )
         else:
             recv_prev_shape = tensor_shape
@@ -430,6 +525,7 @@ class P2PCommunicator:
         if config.use_ring_exchange_p2p:
 
             def _ring_exchange_wrapper(**kwargs):
+                kwargs.pop("peers")
                 torch.distributed.ring_exchange(**kwargs)
                 return []
 
@@ -466,6 +562,10 @@ class P2PCommunicator:
             "wait_on_reqs": wait_on_reqs,
             "batch_p2p_comm": config.batch_p2p_comm,
             "ring_exchange": config.use_ring_exchange_p2p,
+            "send_backward_peer": peers.send_backward,
+            "recv_forward_peer": peers.recv_forward,
+            "send_forward_peer": peers.send_forward,
+            "recv_backward_peer": peers.recv_backward,
         }
         if trace_enabled:
             with _P2PTraceTimer() as issue_timer:
@@ -477,6 +577,7 @@ class P2PCommunicator:
                     group=pp_group,
                     prev_pipeline_rank=prev_rank,
                     next_pipeline_rank=next_rank,
+                    peers=peers,
                 )
             self._trace_p2p("p2p_comm_issue", issue_timer.elapsed_ms, **trace_metadata)
         else:
@@ -488,6 +589,7 @@ class P2PCommunicator:
                 group=pp_group,
                 prev_pipeline_rank=prev_rank,
                 next_pipeline_rank=next_rank,
+                peers=peers,
             )
         if isinstance(p2p_reqs, list):
             reqs.extend(p2p_reqs)
@@ -519,7 +621,10 @@ class P2PCommunicator:
 
     @nvtx_decorator()
     def recv_forward(
-        self, tensor_shapes, is_first_stage: bool
+        self,
+        tensor_shapes,
+        is_first_stage: bool,
+        peers: PipelineP2PPeers | None = None,
     ) -> Union[torch.Tensor, list[torch.Tensor]]:
         """Receive tensor from previous rank in pipeline (forward receive)."""
         unwrap_tensor_shapes = False
@@ -540,6 +645,7 @@ class P2PCommunicator:
                     recv_prev=True,
                     recv_next=False,
                     tensor_shape=tensor_shape,
+                    peers=peers,
                 )
                 if config.timers is not None:
                     config.timers('forward-recv').stop()
@@ -550,7 +656,10 @@ class P2PCommunicator:
 
     @nvtx_decorator()
     def recv_backward(
-        self, tensor_shapes, is_last_stage: bool
+        self,
+        tensor_shapes,
+        is_last_stage: bool,
+        peers: PipelineP2PPeers | None = None,
     ) -> Union[torch.Tensor, list[torch.Tensor]]:
         """Receive tensor from next rank in pipeline (backward receive)."""
         unwrap_tensor_shapes = False
@@ -571,6 +680,7 @@ class P2PCommunicator:
                     recv_prev=False,
                     recv_next=True,
                     tensor_shape=tensor_shape,
+                    peers=peers,
                 )
                 if config.timers is not None:
                     config.timers('backward-recv').stop()
@@ -580,7 +690,12 @@ class P2PCommunicator:
         return output_tensor_grads
 
     @nvtx_decorator()
-    def send_forward(self, output_tensors, is_last_stage: bool) -> None:
+    def send_forward(
+        self,
+        output_tensors,
+        is_last_stage: bool,
+        peers: PipelineP2PPeers | None = None,
+    ) -> None:
         """Send tensor to next rank in pipeline (forward send)."""
         config = self.config
         if not isinstance(output_tensors, list):
@@ -596,12 +711,18 @@ class P2PCommunicator:
                     recv_prev=False,
                     recv_next=False,
                     tensor_shape=None,
+                    peers=peers,
                 )
                 if config.timers is not None:
                     config.timers('forward-send').stop()
 
     @nvtx_decorator()
-    def send_backward(self, input_tensor_grads, is_first_stage: bool) -> None:
+    def send_backward(
+        self,
+        input_tensor_grads,
+        is_first_stage: bool,
+        peers: PipelineP2PPeers | None = None,
+    ) -> None:
         """Send tensor to previous rank in pipeline (backward send)."""
         if not isinstance(input_tensor_grads, list):
             input_tensor_grads = [input_tensor_grads]
@@ -616,13 +737,18 @@ class P2PCommunicator:
                     recv_prev=False,
                     recv_next=False,
                     tensor_shape=None,
+                    peers=peers,
                 )
                 if config.timers is not None:
                     config.timers('backward-send').stop()
 
     @nvtx_decorator()
     def send_forward_recv_backward(
-        self, output_tensors, tensor_shapes, is_last_stage: bool
+        self,
+        output_tensors,
+        tensor_shapes,
+        is_last_stage: bool,
+        peers: PipelineP2PPeers | None = None,
     ) -> Union[torch.Tensor, list[torch.Tensor]]:
         """Batched send and recv with next rank in pipeline."""
         config = self.config
@@ -645,6 +771,7 @@ class P2PCommunicator:
                     recv_prev=False,
                     recv_next=True,
                     tensor_shape=tensor_shape,
+                    peers=peers,
                 )
                 if config.timers is not None:
                     config.timers('forward-send-backward-recv').stop()
@@ -655,7 +782,11 @@ class P2PCommunicator:
 
     @nvtx_decorator()
     def send_backward_recv_forward(
-        self, input_tensor_grads, tensor_shapes, is_first_stage: bool
+        self,
+        input_tensor_grads,
+        tensor_shapes,
+        is_first_stage: bool,
+        peers: PipelineP2PPeers | None = None,
     ) -> Union[torch.Tensor, list[torch.Tensor]]:
         """Batched send and recv with previous rank in pipeline."""
         config = self.config
@@ -678,6 +809,7 @@ class P2PCommunicator:
                     recv_prev=True,
                     recv_next=False,
                     tensor_shape=tensor_shape,
+                    peers=peers,
                 )
                 if config.timers is not None:
                     config.timers('backward-send-forward-recv').stop()
@@ -693,6 +825,7 @@ class P2PCommunicator:
         recv_prev: bool,
         tensor_shape: Shape,
         overlap_p2p_comm: bool = False,
+        peers: PipelineP2PPeers | None = None,
     ) -> torch.Tensor:
         """Batched recv from previous rank and send to next rank in pipeline."""
         config = self.config
@@ -705,6 +838,7 @@ class P2PCommunicator:
             recv_next=False,
             tensor_shape=tensor_shape,
             wait_on_reqs=(not overlap_p2p_comm),
+            peers=peers,
         )
         if config.timers is not None:
             config.timers('forward-send-forward-recv').stop()
@@ -719,6 +853,7 @@ class P2PCommunicator:
         recv_next: bool,
         tensor_shape: Shape,
         overlap_p2p_comm: bool = False,
+        peers: PipelineP2PPeers | None = None,
     ) -> torch.Tensor:
         """Batched recv from next rank and send to previous rank in pipeline."""
         config = self.config
@@ -731,6 +866,7 @@ class P2PCommunicator:
             recv_next=recv_next,
             tensor_shape=tensor_shape,
             wait_on_reqs=(not overlap_p2p_comm),
+            peers=peers,
         )
         if config.timers is not None:
             config.timers('backward-send-backward-recv').stop()
@@ -746,6 +882,7 @@ class P2PCommunicator:
         recv_prev: bool,
         recv_next: bool,
         tensor_shape: Shape,
+        peers: PipelineP2PPeers | None = None,
     ) -> torch.Tensor:
         """Batched send and recv with previous and next ranks in pipeline."""
         config = self.config
@@ -757,6 +894,7 @@ class P2PCommunicator:
             recv_prev=recv_prev,
             recv_next=recv_next,
             tensor_shape=tensor_shape,
+            peers=peers,
         )
         if config.timers is not None:
             config.timers('forward-backward-send-forward-backward-recv').stop()
