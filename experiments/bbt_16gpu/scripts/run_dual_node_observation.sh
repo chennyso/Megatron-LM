@@ -36,10 +36,23 @@ echo "OBSERVATION_START case=${CASE_ID} repeat=${REPEAT_ID} node_rank=${NODE_RAN
 echo "host=$(hostname) date=$(date -Iseconds)"
 
 export GIT_SSL_NO_VERIFY=1
-rm -rf "${CODE_DIR}"
-git clone --filter=blob:none --no-checkout "${GIT_REMOTE}" "${CODE_DIR}"
-git -C "${CODE_DIR}" fetch --depth=1 origin "${GIT_REF}"
-git -C "${CODE_DIR}" checkout --detach FETCH_HEAD
+checkout_code() {
+  local attempt
+  for attempt in 1 2 3 4; do
+    rm -rf "${CODE_DIR}"
+    if git clone --filter=blob:none --no-checkout "${GIT_REMOTE}" "${CODE_DIR}" &&
+      git -C "${CODE_DIR}" fetch --depth=1 origin "${GIT_REF}" &&
+      git -C "${CODE_DIR}" checkout --detach FETCH_HEAD; then
+      return 0
+    fi
+    echo "git checkout attempt ${attempt}/4 failed" >&2
+    if [[ "${attempt}" -lt 4 ]]; then
+      sleep "$((attempt * 5))"
+    fi
+  done
+  return 1
+}
+checkout_code
 GIT_COMMIT="$(git -C "${CODE_DIR}" rev-parse HEAD)"
 
 DEPS_DIR="${OBS_DEPS_DIR:-/workspace/deps/observation_16gpu/minimal-py312}"
