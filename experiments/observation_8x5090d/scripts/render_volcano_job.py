@@ -54,6 +54,9 @@ def render(args: argparse.Namespace) -> str:
             '          value: "true"\n'
             "          effect: NoSchedule"
         )
+    repo_dir = f"/workspace/code/Megatron-LM-observation/{args.run_id}"
+    if args.phase in {"hardware", "motif"}:
+        repo_dir = f"/opt/observation-code/{args.run_id}"
 
     replacements = {
         "__JOB_NAME__": args.job_name,
@@ -67,6 +70,7 @@ def render(args: argparse.Namespace) -> str:
         "__MATRIX_PATH__": args.matrix_path,
         "__GIT_REMOTE_URL__": args.git_remote_url,
         "__GIT_BRANCH__": args.git_branch,
+        "__REPO_DIR__": repo_dir,
         "__WORKSPACE_PVC__": args.workspace_pvc,
         "__MODEL_PVC__": args.model_pvc,
         "__CPU_REQUEST__": args.cpu_request,

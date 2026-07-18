@@ -175,3 +175,48 @@ def test_renderer_records_explicit_nccl_p2p_path():
     assert "export NCCL_P2P_DISABLE=0" in module.render(args)
     assert 'nvidia.com/gpu: "8"' in module.render(args)
     assert "bbt.sspu.edu.cn/stage0-excluded" in module.render(args)
+
+
+def test_motif_renderer_uses_ephemeral_shallow_code_checkout():
+    repo_root = Path(__file__).resolve().parents[3]
+    renderer_path = (
+        repo_root
+        / "experiments"
+        / "observation_8x5090d"
+        / "scripts"
+        / "render_volcano_job.py"
+    )
+    spec = importlib.util.spec_from_file_location("forgepipe_motif_renderer", renderer_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    args = SimpleNamespace(
+        disable_sriov_ib_network=True,
+        nccl_p2p_disable="1",
+        tolerate_stage0_excluded=True,
+        job_name="motif-dry-run",
+        node="g6",
+        image="image",
+        gpu_resource_name="nvidia.com/gpu",
+        gpu_count="8",
+        phase="motif",
+        run_id="motif-run",
+        case_id="",
+        matrix_path="matrix.json",
+        git_remote_url="remote",
+        git_branch="branch",
+        workspace_pvc="workspace",
+        model_pvc="models",
+        cpu_request="1",
+        cpu_limit="2",
+        mem_request="1Gi",
+        mem_limit="2Gi",
+        shm_size="1Gi",
+        obs_repeat_count_override=None,
+        obs_seed_base_override=None,
+    )
+
+    manifest = module.render(args)
+    assert "git -c http.sslVerify=false clone --depth 1" in manifest
+    assert "value: /opt/observation-code/motif-run" in manifest

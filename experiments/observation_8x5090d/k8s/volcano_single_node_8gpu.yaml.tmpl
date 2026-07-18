@@ -47,7 +47,7 @@ spec:
             export GIT_SSL_NO_VERIFY=1
             mkdir -p "$(dirname "${REPO_DIR}")"
             if [ ! -d "${REPO_DIR}/.git" ]; then
-              git -c http.sslVerify=false clone --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
+              git -c http.sslVerify=false clone --depth 1 --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
             else
               git -C "${REPO_DIR}" -c http.sslVerify=false fetch origin "${GIT_BRANCH}"
               git -C "${REPO_DIR}" checkout "${GIT_BRANCH}"
@@ -70,7 +70,7 @@ spec:
           - name: NODE_NAME
             value: "__NODE_NAME__"
           - name: REPO_DIR
-            value: /workspace/code/Megatron-LM-observation/__RUN_ID__
+            value: __REPO_DIR__
           - name: RESULT_ROOT
             value: /workspace/runs/observation_8x5090d/__RUN_ID__
           - name: OBS_REPEAT_COUNT_OVERRIDE
