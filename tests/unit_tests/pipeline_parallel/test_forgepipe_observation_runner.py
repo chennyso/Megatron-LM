@@ -218,5 +218,7 @@ def test_motif_renderer_uses_ephemeral_shallow_code_checkout():
     )
 
     manifest = module.render(args)
-    assert "git -c http.sslVerify=false clone --depth 1" in manifest
+    assert "git -c http.sslVerify=false clone --filter=blob:none --no-checkout" in manifest
+    assert 'fetch --depth 1 origin "${GIT_REF}"' in manifest
+    assert "checkout --detach FETCH_HEAD" in manifest
     assert "value: /opt/observation-code/motif-run" in manifest

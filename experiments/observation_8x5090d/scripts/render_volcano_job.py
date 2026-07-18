@@ -69,7 +69,7 @@ def render(args: argparse.Namespace) -> str:
         "__CASE_ID__": args.case_id or "",
         "__MATRIX_PATH__": args.matrix_path,
         "__GIT_REMOTE_URL__": args.git_remote_url,
-        "__GIT_BRANCH__": args.git_branch,
+        "__GIT_REF__": getattr(args, "git_ref", None) or args.git_branch,
         "__REPO_DIR__": repo_dir,
         "__WORKSPACE_PVC__": args.workspace_pvc,
         "__MODEL_PVC__": args.model_pvc,
@@ -108,6 +108,7 @@ def main() -> int:
         default="experiments/observation_8x5090d/configs/observation_matrix.json",
     )
     parser.add_argument("--git-branch", default=current_branch())
+    parser.add_argument("--git-ref")
     parser.add_argument("--git-remote-url", default="https://github.com/chennyso/Megatron-LM.git")
     parser.add_argument("--workspace-pvc", default="seampipe-paper-workspace")
     parser.add_argument("--model-pvc", default="chenny-models-nfs")

@@ -47,12 +47,10 @@ spec:
             export GIT_SSL_NO_VERIFY=1
             mkdir -p "$(dirname "${REPO_DIR}")"
             if [ ! -d "${REPO_DIR}/.git" ]; then
-              git -c http.sslVerify=false clone --depth 1 --branch "${GIT_BRANCH}" --single-branch "${GIT_REMOTE_URL}" "${REPO_DIR}"
-            else
-              git -C "${REPO_DIR}" -c http.sslVerify=false fetch origin "${GIT_BRANCH}"
-              git -C "${REPO_DIR}" checkout "${GIT_BRANCH}"
-              git -C "${REPO_DIR}" reset --hard "origin/${GIT_BRANCH}"
+              git -c http.sslVerify=false clone --filter=blob:none --no-checkout "${GIT_REMOTE_URL}" "${REPO_DIR}"
             fi
+            git -C "${REPO_DIR}" -c http.sslVerify=false fetch --depth 1 origin "${GIT_REF}"
+            git -C "${REPO_DIR}" checkout --detach FETCH_HEAD
             bash "${REPO_DIR}/experiments/observation_8x5090d/runner/observation_entrypoint.sh"
           env:
           - name: PHASE
@@ -65,8 +63,8 @@ spec:
             value: "__MATRIX_PATH__"
           - name: GIT_REMOTE_URL
             value: "__GIT_REMOTE_URL__"
-          - name: GIT_BRANCH
-            value: "__GIT_BRANCH__"
+          - name: GIT_REF
+            value: "__GIT_REF__"
           - name: NODE_NAME
             value: "__NODE_NAME__"
           - name: REPO_DIR
