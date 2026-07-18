@@ -42,12 +42,11 @@ git -C "${CODE_DIR}" fetch --depth=1 origin "${GIT_REF}"
 git -C "${CODE_DIR}" checkout --detach FETCH_HEAD
 GIT_COMMIT="$(git -C "${CODE_DIR}" rev-parse HEAD)"
 
-if ! python3 -c 'import sentencepiece, transformers' >/dev/null 2>&1; then
-  python3 -m pip install --quiet --no-cache-dir \
-    'transformers==4.51.0' \
-    'sentencepiece==0.2.0'
-fi
-python3 -m pip freeze > "${NODE_DIR}/pip_freeze.txt"
+DEPS_DIR="${OBS_DEPS_DIR:-/workspace/deps/observation_16gpu/minimal-py312}"
+test -f "${DEPS_DIR}/READY"
+export PYTHONPATH="${DEPS_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+python3 -c 'import sentencepiece, transformers'
+python3 -m pip freeze --path "${DEPS_DIR}" > "${NODE_DIR}/pip_freeze.txt"
 
 test -f "${MODEL_PATH}/config.json"
 test -f "${MODEL_PATH}/tokenizer.json"
@@ -113,6 +112,7 @@ payload = {
     "measure_steps": int(os.environ["MEASURE_STEPS"]),
     "model_path": os.environ["MODEL_PATH"],
     "data_path": os.environ["DATA_PATH"],
+    "dependency_path": "${DEPS_DIR}",
     "ib_interface": "${IB_IF}",
     "rdma_device": "${RDMA_DEV}",
     "python": platform.python_version(),
