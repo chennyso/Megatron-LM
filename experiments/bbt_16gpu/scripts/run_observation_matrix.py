@@ -87,8 +87,15 @@ def main() -> int:
         choices=["screening", "screening_clean", "diagnostic", "tuning", "all"],
         default="screening",
     )
+    parser.add_argument(
+        "--case-id",
+        action="append",
+        help="Run only this case (repeat the option to select multiple cases).",
+    )
     parser.add_argument("--profile-mode", choices=["throughput", "trace", "nsys"], default="throughput")
     parser.add_argument("--repeats", type=int)
+    parser.add_argument("--warmup-steps", type=int)
+    parser.add_argument("--measure-steps", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--timeout-s", type=int, default=7200)
     parser.add_argument("--pending-timeout-s", type=int, default=300)
@@ -101,11 +108,21 @@ def main() -> int:
     repeat_key = f"{args.profile_mode}_repeats"
     repeats = args.repeats or config["repeat_policy"][repeat_key]
     seed = args.seed or config["repeat_policy"]["randomization_seed"]
-    case_ids = [
-        case_id
-        for case_id, case in config["cases"].items()
-        if args.phase == "all" or case["phase"] == args.phase
-    ]
+    if args.warmup_steps is not None and args.warmup_steps < 0:
+        parser.error("--warmup-steps must be non-negative")
+    if args.measure_steps is not None and args.measure_steps < 1:
+        parser.error("--measure-steps must be positive")
+    if args.case_id:
+        unknown_cases = sorted(set(args.case_id).difference(config["cases"]))
+        if unknown_cases:
+            parser.error(f"unknown --case-id values: {unknown_cases}")
+        case_ids = list(dict.fromkeys(args.case_id))
+    else:
+        case_ids = [
+            case_id
+            for case_id, case in config["cases"].items()
+            if args.phase == "all" or case["phase"] == args.phase
+        ]
     work = [(case_id, repeat_id) for repeat_id in range(1, repeats + 1) for case_id in case_ids]
     random.Random(seed).shuffle(work)
 
@@ -119,6 +136,8 @@ def main() -> int:
                 "git_ref": resolved_git_ref,
                 "phase": args.phase,
                 "profile_mode": args.profile_mode,
+                "warmup_steps": args.warmup_steps,
+                "measure_steps": args.measure_steps,
                 "seed": seed,
                 "work": [{"case_id": case, "repeat_id": repeat} for case, repeat in work],
             },
@@ -151,6 +170,10 @@ def main() -> int:
             args.profile_mode,
             "--apply",
         ]
+        if args.warmup_steps is not None:
+            command.extend(("--warmup-steps", str(args.warmup_steps)))
+        if args.measure_steps is not None:
+            command.extend(("--measure-steps", str(args.measure_steps)))
         subprocess.run(command, check=True)
         phase = wait_for_terminal(name, args.timeout_s, args.pending_timeout_s)
         if phase != "Completed":
