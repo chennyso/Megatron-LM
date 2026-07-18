@@ -60,6 +60,18 @@ def _load_strategy_synthesizer():
     return module
 
 
+def test_interleaved_trace_timer_is_not_constructed_for_throughput_runs():
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (
+        repo_root / "megatron" / "core" / "pipeline_parallel" / "schedules.py"
+    ).read_text(encoding="utf-8")
+    guarded_timer = "CudaTimer() if strategy_trace.enabled else contextlib.nullcontext()"
+
+    # Forward and backward must both bypass CUDA event construction and
+    # synchronization when no strategy trace path was requested.
+    assert source.count(guarded_timer) == 2
+
+
 class _ManualTimer:
     elapsed_ms = 2.5
 

@@ -1648,24 +1648,28 @@ def forward_backward_pipelining_with_interleaving(
                 forward_microbatch_id = get_microbatch_id_in_model_chunk(
                     f_virtual_microbatch_id, forward=True
                 )
-                with CudaTimer() as strategy_timer:
+                timer_context = (
+                    CudaTimer() if strategy_trace.enabled else contextlib.nullcontext()
+                )
+                with timer_context as strategy_timer:
                     forward_output_tensor = forward_step_helper(
                         f_virtual_microbatch_id, checkpoint_activations_microbatch
                     )
-                strategy_trace.record(
-                    "forward_step",
-                    strategy_timer.elapsed_ms,
-                    microbatch_id=forward_microbatch_id,
-                    model_chunk_id=forward_model_chunk_id,
-                    memory_mb=current_memory_mb(),
-                    task_id=(
-                        f"F:r{pipeline_parallel_rank}:c{forward_model_chunk_id}:"
-                        f"m{forward_microbatch_id}"
-                    ),
-                    virtual_microbatch_id=f_virtual_microbatch_id,
-                    ready_ts=None,
-                    scheduled_at=time.time(),
-                )
+                if strategy_timer is not None:
+                    strategy_trace.record(
+                        "forward_step",
+                        strategy_timer.elapsed_ms,
+                        microbatch_id=forward_microbatch_id,
+                        model_chunk_id=forward_model_chunk_id,
+                        memory_mb=current_memory_mb(),
+                        task_id=(
+                            f"F:r{pipeline_parallel_rank}:c{forward_model_chunk_id}:"
+                            f"m{forward_microbatch_id}"
+                        ),
+                        virtual_microbatch_id=f_virtual_microbatch_id,
+                        ready_ts=None,
+                        scheduled_at=time.time(),
+                    )
                 if post_forward is not None:
                     forward_output_tensor = post_forward(forward_output_tensor)
 
@@ -1677,22 +1681,26 @@ def forward_backward_pipelining_with_interleaving(
                 backward_microbatch_id = num_released_microbatches(
                     b_virtual_microbatch_id, backward_model_chunk_id
                 )
-                with CudaTimer() as strategy_timer:
-                    backward_input_tensor_grad = backward_step_helper(b_virtual_microbatch_id)
-                strategy_trace.record(
-                    "backward_step",
-                    strategy_timer.elapsed_ms,
-                    microbatch_id=backward_microbatch_id,
-                    model_chunk_id=backward_model_chunk_id,
-                    memory_mb=current_memory_mb(),
-                    task_id=(
-                        f"B:r{pipeline_parallel_rank}:c{backward_model_chunk_id}:"
-                        f"m{backward_microbatch_id}"
-                    ),
-                    virtual_microbatch_id=b_virtual_microbatch_id,
-                    ready_ts=None,
-                    scheduled_at=time.time(),
+                timer_context = (
+                    CudaTimer() if strategy_trace.enabled else contextlib.nullcontext()
                 )
+                with timer_context as strategy_timer:
+                    backward_input_tensor_grad = backward_step_helper(b_virtual_microbatch_id)
+                if strategy_timer is not None:
+                    strategy_trace.record(
+                        "backward_step",
+                        strategy_timer.elapsed_ms,
+                        microbatch_id=backward_microbatch_id,
+                        model_chunk_id=backward_model_chunk_id,
+                        memory_mb=current_memory_mb(),
+                        task_id=(
+                            f"B:r{pipeline_parallel_rank}:c{backward_model_chunk_id}:"
+                            f"m{backward_microbatch_id}"
+                        ),
+                        virtual_microbatch_id=b_virtual_microbatch_id,
+                        ready_ts=None,
+                        scheduled_at=time.time(),
+                    )
                 if post_backward is not None:
                     backward_input_tensor_grad = post_backward(backward_input_tensor_grad)
             return forward_output_tensor, backward_input_tensor_grad

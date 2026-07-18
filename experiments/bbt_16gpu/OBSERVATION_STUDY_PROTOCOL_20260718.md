@@ -143,6 +143,18 @@ with materially fewer real-hardware trials.
 
 ## Current Execution State
 
+### Invalidated screening evidence
+
+The run family `obs16-r103-screening-final-20260718` is retained only as
+contaminated engineering evidence.  Its interleaved path constructed a CUDA
+event timer and synchronized the end event for every forward and backward
+virtual microbatch even when strategy tracing was disabled.  The number of
+observer-induced synchronizations therefore increased with VPP granularity,
+while the 1F1B path bypassed the same instrumentation.  Those results must not
+be used for schedule ranking, speedup, or paper claims.  All screening cases
+must be repeated from an immutable commit after timer gating, with a tuned
+sequence-parallel baseline included.
+
 The real dataset, tokenizer, model config, IB link characterization, renderer,
 randomized matrix controller, 1F1B/VPP trace paths, and analysis scripts are
 ready. A two-node real-data shakeout was submitted as
