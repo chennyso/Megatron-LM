@@ -96,3 +96,13 @@ def test_analyzer_iteration_pattern_matches_real_dual_node_log(tmp_path):
     rows, summary = analyzer.parse_steps(log_path, warmup_steps=2, seq_length=4096)
     assert len(rows) == 1
     assert summary["iteration_time_ms"]["median"] == 9347.3
+
+
+def test_matrix_controller_resolves_branch_to_immutable_commit():
+    controller = load_module(
+        "dual_node_observation_controller",
+        "experiments/bbt_16gpu/scripts/run_observation_matrix.py",
+    )
+    resolved = controller.resolve_git_ref("HEAD")
+    assert len(resolved) == 40
+    assert all(character in "0123456789abcdef" for character in resolved)

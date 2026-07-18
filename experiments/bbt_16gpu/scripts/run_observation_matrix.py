@@ -35,6 +35,16 @@ def kubectl_json(args: list[str]) -> dict:
     return json.loads(result.stdout)
 
 
+def resolve_git_ref(ref: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def wait_for_terminal(name: str, timeout_s: int, pending_timeout_s: int) -> str:
     started = time.time()
     first_running = None
@@ -83,6 +93,7 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    resolved_git_ref = resolve_git_ref(args.git_ref)
     repeat_key = f"{args.profile_mode}_repeats"
     repeats = args.repeats or config["repeat_policy"][repeat_key]
     seed = args.seed or config["repeat_policy"]["randomization_seed"]
@@ -100,7 +111,8 @@ def main() -> int:
         json.dumps(
             {
                 "run_id": args.run_id,
-                "git_ref": args.git_ref,
+                "requested_git_ref": args.git_ref,
+                "git_ref": resolved_git_ref,
                 "phase": args.phase,
                 "profile_mode": args.profile_mode,
                 "seed": seed,
@@ -130,7 +142,7 @@ def main() -> int:
             "--repeat-id",
             str(repeat_id),
             "--git-ref",
-            args.git_ref,
+            resolved_git_ref,
             "--profile-mode",
             args.profile_mode,
             "--apply",
