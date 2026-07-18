@@ -8,7 +8,6 @@ import subprocess
 import time
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = REPO_ROOT / "experiments/bbt_16gpu/configs/observation_16gpu.json"
 RENDERER = REPO_ROOT / "experiments/bbt_16gpu/scripts/render_dual_node_observation.py"

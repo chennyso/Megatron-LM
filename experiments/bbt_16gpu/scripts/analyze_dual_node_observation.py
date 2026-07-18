@@ -10,7 +10,6 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-
 ITER_RE = re.compile(
     r"iteration\s+(?P<iteration>\d+)\s*/\s*(?P<total>\d+)\s*\|"
     r".*?elapsed time per iteration \(ms\):\s*(?P<iter_ms>[0-9.]+)\s*\|"
