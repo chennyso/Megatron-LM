@@ -2,6 +2,8 @@
 
 """Logical pipeline routes and static communication verification."""
 
+from __future__ import annotations
+
 from collections import Counter
 from dataclasses import dataclass
 from typing import Hashable, Iterable, Sequence
@@ -83,6 +85,48 @@ class PipelineRoute:
             stages.extend(LogicalStage(virtual_chunk, rank) for rank in physical_ranks)
         return cls(pipeline_size, virtual_chunks, tuple(stages))
 
+    @classmethod
+    def topology_segmented(
+        cls,
+        pipeline_size: int,
+        virtual_chunks: int,
+        node_by_rank: Sequence[Hashable],
+        hierarchy_factor: int,
+        *,
+        rotate_endpoints: bool = False,
+    ) -> "PipelineRoute":
+        """Group h virtual chunks inside each topology-domain run.
+
+        For two domains and ``h | V``, the forward route has ``2V/h - 1``
+        cross-domain transitions. Optional per-group rank rotation preserves
+        that budget while spreading transition endpoints across local ranks.
+        """
+        if len(node_by_rank) != pipeline_size:
+            raise ValueError("node_by_rank must contain one entry per physical pipeline rank")
+        if hierarchy_factor < 1 or virtual_chunks % hierarchy_factor != 0:
+            raise ValueError("hierarchy_factor must be a positive divisor of virtual_chunks")
+
+        ranks_by_domain: dict[Hashable, list[int]] = {}
+        for rank, domain in enumerate(node_by_rank):
+            ranks_by_domain.setdefault(domain, []).append(rank)
+        if not ranks_by_domain:
+            raise ValueError("node_by_rank must define at least one topology domain")
+
+        stages: list[LogicalStage] = []
+        for group_index, first_chunk in enumerate(
+            range(0, virtual_chunks, hierarchy_factor)
+        ):
+            chunks = range(first_chunk, first_chunk + hierarchy_factor)
+            for domain_ranks in ranks_by_domain.values():
+                rotation = group_index % len(domain_ranks) if rotate_endpoints else 0
+                ordered_ranks = domain_ranks[rotation:] + domain_ranks[:rotation]
+                for virtual_chunk in chunks:
+                    stages.extend(
+                        LogicalStage(virtual_chunk, physical_rank)
+                        for physical_rank in ordered_ranks
+                    )
+        return cls(pipeline_size, virtual_chunks, tuple(stages))
+
     def verify_bijection(self) -> None:
         """Require every (virtual chunk, physical rank) pair exactly once."""
         expected = {
@@ -136,6 +180,35 @@ class PipelineRoute:
             if node_by_rank[edge.source.physical_rank]
             != node_by_rank[edge.target.physical_rank]
         )
+
+    def cross_node_endpoint_counts(
+        self, node_by_rank: Sequence[Hashable]
+    ) -> Counter[int]:
+        """Count cross-domain forward-edge incidences at each physical rank."""
+        counts: Counter[int] = Counter()
+        for edge in self.cross_node_edges(node_by_rank):
+            counts[edge.source.physical_rank] += 1
+            counts[edge.target.physical_rank] += 1
+        return counts
+
+    def rank_reuse_gaps(self) -> dict[int, tuple[int, ...]]:
+        """Return intervening-stage counts between uses of each physical rank."""
+        positions: dict[int, list[int]] = {
+            rank: [] for rank in range(self.pipeline_size)
+        }
+        for position, stage in enumerate(self.stages):
+            positions[stage.physical_rank].append(position)
+        return {
+            rank: tuple(right - left - 1 for left, right in zip(items, items[1:]))
+            for rank, items in positions.items()
+        }
+
+    def rank_reuse_pressure(self) -> float:
+        """Summarize short physical-rank reuse intervals; lower is better."""
+        gaps = [gap for rank_gaps in self.rank_reuse_gaps().values() for gap in rank_gaps]
+        if not gaps:
+            return 0.0
+        return sum(1.0 / (gap + 1.0) for gap in gaps) / len(gaps)
 
     def message_signatures(
         self, direction: str, tensor_kind: str

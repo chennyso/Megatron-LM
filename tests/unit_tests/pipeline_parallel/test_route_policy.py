@@ -2,9 +2,11 @@
 
 import pytest
 
-from megatron.core.pipeline_parallel.route_policy import (LogicalStage,
-                                                          P2PAction,
-                                                          PipelineRoute)
+from megatron.core.pipeline_parallel.route_policy import (
+    LogicalStage,
+    P2PAction,
+    PipelineRoute,
+)
 
 
 @pytest.mark.parametrize("virtual_chunks", [1, 2, 4, 8])
@@ -103,3 +105,65 @@ def test_crossing_count_requires_complete_rank_topology():
 
     with pytest.raises(ValueError, match="one entry per physical pipeline rank"):
         route.cross_node_edges(("g5", "g6"))
+
+
+@pytest.mark.parametrize("hierarchy_factor,expected_transitions", [(1, 15), (2, 7), (4, 3), (8, 1)])
+def test_topology_segmented_route_realizes_intermediate_transition_budgets(
+    hierarchy_factor, expected_transitions
+):
+    node_by_rank = ("g5",) * 4 + ("g6",) * 4
+    route = PipelineRoute.topology_segmented(
+        pipeline_size=8,
+        virtual_chunks=8,
+        node_by_rank=node_by_rank,
+        hierarchy_factor=hierarchy_factor,
+    )
+
+    route.verify()
+    assert len(route.cross_node_edges(node_by_rank)) == expected_transitions
+
+
+def test_hierarchy_one_is_the_standard_route_on_contiguous_domains():
+    node_by_rank = ("g5",) * 4 + ("g6",) * 4
+
+    assert PipelineRoute.topology_segmented(
+        pipeline_size=8,
+        virtual_chunks=4,
+        node_by_rank=node_by_rank,
+        hierarchy_factor=1,
+    ) == PipelineRoute.standard(pipeline_size=8, virtual_chunks=4)
+
+
+def test_endpoint_rotation_spreads_transition_load_without_changing_budget():
+    node_by_rank = ("g5",) * 4 + ("g6",) * 4
+    fixed = PipelineRoute.topology_segmented(8, 8, node_by_rank, 2)
+    rotated = PipelineRoute.topology_segmented(
+        8, 8, node_by_rank, 2, rotate_endpoints=True
+    )
+
+    fixed_load = fixed.cross_node_endpoint_counts(node_by_rank)
+    rotated_load = rotated.cross_node_endpoint_counts(node_by_rank)
+    assert len(fixed.cross_node_edges(node_by_rank)) == len(
+        rotated.cross_node_edges(node_by_rank)
+    )
+    assert max(rotated_load.values()) < max(fixed_load.values())
+
+
+def test_transition_reduction_exposes_rank_reuse_tradeoff():
+    node_by_rank = ("g5",) * 4 + ("g6",) * 4
+    standard = PipelineRoute.topology_segmented(8, 8, node_by_rank, 1)
+    one_transition = PipelineRoute.topology_segmented(8, 8, node_by_rank, 8)
+
+    assert standard.rank_reuse_pressure() < one_transition.rank_reuse_pressure()
+    assert min(gap for gaps in standard.rank_reuse_gaps().values() for gap in gaps) == 7
+    assert min(gap for gaps in one_transition.rank_reuse_gaps().values() for gap in gaps) == 3
+
+
+def test_topology_segmented_route_rejects_non_divisor_hierarchy():
+    with pytest.raises(ValueError, match="positive divisor"):
+        PipelineRoute.topology_segmented(
+            pipeline_size=8,
+            virtual_chunks=8,
+            node_by_rank=("g5",) * 4 + ("g6",) * 4,
+            hierarchy_factor=3,
+        )
