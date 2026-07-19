@@ -192,6 +192,26 @@
       "overlap_p2p": true,
       "warmup_flush_overlap": true,
       "microbatch_group_size": 8
+    },
+    "tune_vpp4_nosp_edge_balanced": {
+      "phase": "tuning",
+      "schedule": "vpp4",
+      "vpp_size": 4,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": false,
+      "pipeline_model_parallel_layout": "Et|ttt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|tt|ttt|tL"
+    },
+    "tune_vpp8_sp_edge_balanced": {
+      "phase": "tuning",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": true,
+      "pipeline_model_parallel_layout": "E|tt|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|tt|L"
     }
   }
 }

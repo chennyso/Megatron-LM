@@ -173,6 +173,7 @@ def render(args: argparse.Namespace) -> str:
         "WARMUP_FLUSH_OVERLAP": int(case["warmup_flush_overlap"]),
         "SEQUENCE_PARALLEL": int(case.get("sequence_parallel", False)),
         "MICROBATCH_GROUP_SIZE": case["microbatch_group_size"] or 0,
+        "PIPELINE_MODEL_PARALLEL_LAYOUT": case.get("pipeline_model_parallel_layout", ""),
         "PROFILE_MODE": args.profile_mode,
         "WARMUP_STEPS": warmup_steps,
         "MEASURE_STEPS": measure_steps,

@@ -122,6 +122,7 @@ payload = {
     "warmup_flush_overlap": os.environ["WARMUP_FLUSH_OVERLAP"] == "1",
     "sequence_parallel": os.environ["SEQUENCE_PARALLEL"] == "1",
     "microbatch_group_size": int(os.environ.get("MICROBATCH_GROUP_SIZE", "0")) or None,
+    "pipeline_model_parallel_layout": os.environ.get("PIPELINE_MODEL_PARALLEL_LAYOUT") or None,
     "warmup_steps": int(os.environ["WARMUP_STEPS"]),
     "measure_steps": int(os.environ["MEASURE_STEPS"]),
     "model_path": os.environ["MODEL_PATH"],
@@ -212,10 +213,15 @@ SCHEDULE_ARGS=()
 if [[ "${SEQUENCE_PARALLEL}" == "1" ]]; then
   SCHEDULE_ARGS+=(--sequence-parallel)
 fi
+if [[ -n "${PIPELINE_MODEL_PARALLEL_LAYOUT:-}" ]]; then
+  SCHEDULE_ARGS+=(--pipeline-model-parallel-layout "${PIPELINE_MODEL_PARALLEL_LAYOUT}")
+fi
 if [[ "${VPP_SIZE}" -eq 1 ]]; then
   SCHEDULE_ARGS+=(--no-overlap-p2p-communication)
 else
-  SCHEDULE_ARGS+=(--num-virtual-stages-per-pipeline-rank "${VPP_SIZE}")
+  if [[ -z "${PIPELINE_MODEL_PARALLEL_LAYOUT:-}" ]]; then
+    SCHEDULE_ARGS+=(--num-virtual-stages-per-pipeline-rank "${VPP_SIZE}")
+  fi
   SCHEDULE_ARGS+=(--microbatch-group-size-per-virtual-pipeline-stage "${MICROBATCH_GROUP_SIZE}")
   if [[ "${OVERLAP_P2P}" != "1" ]]; then
     SCHEDULE_ARGS+=(--no-overlap-p2p-communication)

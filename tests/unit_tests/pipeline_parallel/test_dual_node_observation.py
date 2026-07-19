@@ -114,6 +114,56 @@ def test_renderer_lowers_sequence_parallel_into_explicit_environment():
     assert manifest.count('value: "1"') >= 2
 
 
+def test_edge_balanced_layouts_preserve_64_layers_and_requested_vpp_size():
+    config = json.loads(
+        (REPO_ROOT / "experiments/bbt_16gpu/configs/observation_16gpu.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    for case_id, expected_stages in (
+        ("tune_vpp4_nosp_edge_balanced", 32),
+        ("tune_vpp8_sp_edge_balanced", 64),
+    ):
+        case = config["cases"][case_id]
+        segments = case["pipeline_model_parallel_layout"].split("|")
+        assert len(segments) == expected_stages
+        assert sum(segment.count("t") for segment in segments) == 64
+        assert segments[0].startswith("E")
+        assert segments[-1].endswith("L")
+
+
+def test_renderer_lowers_nonuniform_pipeline_layout_into_environment():
+    renderer = load_module(
+        "dual_node_observation_renderer_layout",
+        "experiments/bbt_16gpu/scripts/render_dual_node_observation.py",
+    )
+    manifest = renderer.render(
+        SimpleNamespace(
+            config=REPO_ROOT / "experiments/bbt_16gpu/configs/observation_16gpu.json",
+            case_id="tune_vpp4_nosp_edge_balanced",
+            run_id="test-run-layout",
+            repeat_id=1,
+            git_ref="test-branch",
+            profile_mode="throughput",
+            master_port=29500,
+            warmup_steps=None,
+            measure_steps=None,
+            git_remote=None,
+            image=None,
+            workspace_pvc=None,
+            model_pvc=None,
+        )
+    )
+
+    assert manifest.count("- name: PIPELINE_MODEL_PARALLEL_LAYOUT") == 2
+    assert manifest.count("Et|ttt|tt|tt") == 2
+    launcher = (
+        REPO_ROOT / "experiments/bbt_16gpu/scripts/run_dual_node_observation.sh"
+    ).read_text(encoding="utf-8")
+    assert 'if [[ -z "${PIPELINE_MODEL_PARALLEL_LAYOUT:-}" ]]' in launcher
+
+
 def test_analyzer_excludes_warmup_steps(tmp_path):
     analyzer = load_module(
         "dual_node_observation_analyzer",
