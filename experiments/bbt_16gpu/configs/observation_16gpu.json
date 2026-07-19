@@ -161,6 +161,15 @@
       "warmup_flush_overlap": false,
       "microbatch_group_size": 8
     },
+    "diag_vpp8_sp_no_overlap": {
+      "phase": "diagnostic",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": false,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": true
+    },
     "tune_vpp4_group16": {
       "phase": "tuning",
       "schedule": "vpp4",
