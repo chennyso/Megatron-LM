@@ -212,6 +212,16 @@
       "microbatch_group_size": 8,
       "sequence_parallel": true,
       "pipeline_model_parallel_layout": "E|tt|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|tt|L"
+    },
+    "tune_vpp8_sp_seam_staggered": {
+      "phase": "tuning",
+      "schedule": "vpp8",
+      "vpp_size": 8,
+      "overlap_p2p": true,
+      "warmup_flush_overlap": false,
+      "microbatch_group_size": 8,
+      "sequence_parallel": true,
+      "pipeline_strategy_policy": "seam-staggered"
     }
   }
 }

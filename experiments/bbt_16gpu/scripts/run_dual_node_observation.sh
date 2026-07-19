@@ -5,7 +5,7 @@ required_env=(
   CASE_ID RUN_ID REPEAT_ID NODE_RANK MASTER_ADDR MASTER_PORT
   GIT_REMOTE GIT_REF WORKSPACE_ROOT MODEL_PATH DATA_PATH
   VPP_SIZE OVERLAP_P2P WARMUP_FLUSH_OVERLAP PROFILE_MODE
-  SEQUENCE_PARALLEL WARMUP_STEPS MEASURE_STEPS
+  SEQUENCE_PARALLEL WARMUP_STEPS MEASURE_STEPS PIPELINE_STRATEGY_POLICY
 )
 for name in "${required_env[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -121,6 +121,7 @@ payload = {
     "overlap_p2p": os.environ["OVERLAP_P2P"] == "1",
     "warmup_flush_overlap": os.environ["WARMUP_FLUSH_OVERLAP"] == "1",
     "sequence_parallel": os.environ["SEQUENCE_PARALLEL"] == "1",
+    "pipeline_strategy_policy": os.environ["PIPELINE_STRATEGY_POLICY"],
     "microbatch_group_size": int(os.environ.get("MICROBATCH_GROUP_SIZE", "0")) or None,
     "pipeline_model_parallel_layout": os.environ.get("PIPELINE_MODEL_PARALLEL_LAYOUT") or None,
     "warmup_steps": int(os.environ["WARMUP_STEPS"]),
@@ -212,6 +213,9 @@ COMMON_ARGS=(
 SCHEDULE_ARGS=()
 if [[ "${SEQUENCE_PARALLEL}" == "1" ]]; then
   SCHEDULE_ARGS+=(--sequence-parallel)
+fi
+if [[ "${PIPELINE_STRATEGY_POLICY}" != "default" ]]; then
+  SCHEDULE_ARGS+=(--pipeline-strategy-policy "${PIPELINE_STRATEGY_POLICY}")
 fi
 if [[ -n "${PIPELINE_MODEL_PARALLEL_LAYOUT:-}" ]]; then
   SCHEDULE_ARGS+=(--pipeline-model-parallel-layout "${PIPELINE_MODEL_PARALLEL_LAYOUT}")

@@ -114,6 +114,32 @@ def test_renderer_lowers_sequence_parallel_into_explicit_environment():
     assert manifest.count('value: "1"') >= 2
 
 
+def test_renderer_lowers_agent_schedule_policy_into_environment():
+    renderer = load_module(
+        "dual_node_observation_renderer_strategy_policy",
+        "experiments/bbt_16gpu/scripts/render_dual_node_observation.py",
+    )
+    manifest = renderer.render(
+        SimpleNamespace(
+            config=REPO_ROOT / "experiments/bbt_16gpu/configs/observation_16gpu.json",
+            case_id="tune_vpp8_sp_seam_staggered",
+            run_id="test-run-seam",
+            repeat_id=1,
+            git_ref="test-branch",
+            profile_mode="throughput",
+            master_port=29500,
+            warmup_steps=None,
+            measure_steps=None,
+            git_remote=None,
+            image=None,
+            workspace_pvc=None,
+            model_pvc=None,
+        )
+    )
+    assert manifest.count("- name: PIPELINE_STRATEGY_POLICY") == 2
+    assert manifest.count('value: "seam-staggered"') == 2
+
+
 def test_edge_balanced_layouts_preserve_64_layers_and_requested_vpp_size():
     from megatron.core.transformer.pipeline_parallel_layer_layout import (
         PipelineParallelLayerLayout,
