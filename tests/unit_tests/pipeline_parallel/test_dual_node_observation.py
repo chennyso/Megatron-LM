@@ -115,6 +115,10 @@ def test_renderer_lowers_sequence_parallel_into_explicit_environment():
 
 
 def test_edge_balanced_layouts_preserve_64_layers_and_requested_vpp_size():
+    from megatron.core.transformer.pipeline_parallel_layer_layout import (
+        PipelineParallelLayerLayout,
+    )
+
     config = json.loads(
         (REPO_ROOT / "experiments/bbt_16gpu/configs/observation_16gpu.json").read_text(
             encoding="utf-8"
@@ -131,6 +135,11 @@ def test_edge_balanced_layouts_preserve_64_layers_and_requested_vpp_size():
         assert sum(segment.count("t") for segment in segments) == 64
         assert segments[0].startswith("E")
         assert segments[-1].endswith("L")
+        parsed = PipelineParallelLayerLayout(
+            case["pipeline_model_parallel_layout"], pipeline_model_parallel_size=8
+        )
+        assert parsed.virtual_pipeline_model_parallel_size == expected_stages // 8
+        assert parsed.validate_layer_layout(num_layers=64, mtp_num_layers=None) is False
 
 
 def test_renderer_lowers_nonuniform_pipeline_layout_into_environment():
