@@ -326,6 +326,8 @@ class StrategyVerifier:
                     f"{microbatch_id}, which is not supported without tagged P2P"
                 )
 
+        self._verify_group_shape(candidate)
+
         if isinstance(candidate, StrategyPlan):
             self._verify_tasks(candidate)
             self._verify_runtime_policy(candidate)
@@ -333,6 +335,64 @@ class StrategyVerifier:
             self._verify_structured_partition(candidate)
             self._verify_backend_schedule_table(candidate)
             self._verify_memory(candidate)
+
+    def _verify_group_shape(self, candidate: StrategyCandidate | StrategyPlan) -> None:
+        """Reject grouped tables that cannot fill the PP warmup safely.
+
+        The current interleaved executor assumes every contiguous microbatch
+        group can feed all pipeline ranks. A generated policy that starts with
+        fewer microbatches than PP leaves the per-chunk input queues shorter
+        than the warmup offset and fails later as an opaque IndexError.
+        """
+
+        table = candidate.schedule_table
+        if not table:
+            return
+        index = 0
+        group_sizes: List[int] = []
+        while index < len(table):
+            if table[index][1] != 0:
+                raise ValueError(
+                    f"strategy {candidate.name} starts a microbatch group at "
+                    f"model chunk {table[index][1]}, expected chunk 0"
+                )
+            expected_microbatches: Optional[List[int]] = None
+            for chunk_id in range(self.constraints.num_model_chunks):
+                chunk_microbatches: List[int] = []
+                while index < len(table) and table[index][1] == chunk_id:
+                    chunk_microbatches.append(table[index][0])
+                    index += 1
+                if not chunk_microbatches:
+                    raise ValueError(
+                        f"strategy {candidate.name} has an empty chunk {chunk_id} "
+                        "inside a microbatch group"
+                    )
+                if expected_microbatches is None:
+                    expected_microbatches = chunk_microbatches
+                elif chunk_microbatches != expected_microbatches:
+                    raise ValueError(
+                        f"strategy {candidate.name} uses unequal microbatch groups "
+                        f"across virtual chunks: {expected_microbatches} vs "
+                        f"{chunk_microbatches}"
+                    )
+            assert expected_microbatches is not None
+            if any(
+                right != left + 1
+                for left, right in zip(expected_microbatches, expected_microbatches[1:])
+            ):
+                raise ValueError(
+                    f"strategy {candidate.name} must keep microbatches contiguous within "
+                    "each virtual-pipeline group"
+                )
+            group_sizes.append(len(expected_microbatches))
+
+        too_small = [size for size in group_sizes if size < self.constraints.pipeline_parallel_size]
+        if too_small:
+            raise ValueError(
+                f"strategy {candidate.name} has microbatch groups {group_sizes}; "
+                f"each group must contain at least PP={self.constraints.pipeline_parallel_size} "
+                "microbatches for the current warmup/queue executor"
+            )
 
     def _verify_tasks(self, plan: StrategyPlan) -> None:
         if not plan.tasks:
