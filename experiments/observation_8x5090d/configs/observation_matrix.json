@@ -2218,7 +2218,11 @@
       "layers_per_virtual_stage": 10,
       "rewrite_type": "GranularityRewrite",
       "baseline_case_id": "qwen14b_pp2_fsdp",
-      "overlap_p2p_comm": false
+      "overlap_p2p_comm": false,
+      "strategy_trace": {
+        "enabled": true,
+        "profile_steps": 6
+      }
     },
     {
       "id": "rewrite_load_qwen30b",

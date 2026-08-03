@@ -349,6 +349,20 @@ def run_case(case: dict, matrix: dict, output_dir: Path) -> None:
         if not case.get("overlap_p2p_comm", False):
             cmd.append("--no-overlap-p2p-communication")
 
+        # Keep strategy traces opt-in so normal throughput runs are not perturbed.
+        # The formatter is resolved by Megatron after distributed initialization,
+        # giving each emitting PP rank an independent artifact.
+        trace_cfg = case.get("strategy_trace", {})
+        if trace_cfg.get("enabled", False):
+            cmd.extend(
+                [
+                    "--pipeline-strategy-trace-path",
+                    str(repeat_dir / "strategy_trace_rank{rank}.json"),
+                    "--pipeline-strategy-profile-steps",
+                    str(trace_cfg.get("profile_steps", 0)),
+                ]
+            )
+
         fsdp = case.get("fsdp", {})
         if fsdp.get("enabled", False):
             cmd.extend(
