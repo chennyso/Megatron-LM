@@ -7,6 +7,7 @@ set -euo pipefail
 PATTERN="${1:?usage: $0 <hybrid-layer-pattern> <run-id> [iters]}"
 RUN_ID="${2:?usage: $0 <hybrid-layer-pattern> <run-id> [iters]}"
 ITERS="${3:-12}"
+WARMUP="${WARMUP_OVERRIDE:-2}"
 NS=default
 G5="$(kubectl get pod -n "$NS" -l app.kubernetes.io/name=chenny-g5-g6-16gpu-reservation,bbt.sspu.edu.cn/reservation-node=g5 -o jsonpath='{.items[0].metadata.name}')"
 G6="$(kubectl get pod -n "$NS" -l app.kubernetes.io/name=chenny-g5-g6-16gpu-reservation,bbt.sspu.edu.cn/reservation-node=g6 -o jsonpath='{.items[0].metadata.name}')"
@@ -50,7 +51,7 @@ launch() {
       --eval-iters 1 --eval-interval 1000 --log-interval 1 --lr 1e-6 --min-lr 1e-7 \\
       --lr-decay-style constant --transformer-impl transformer_engine --attention-backend unfused \\
       --pipeline-strategy-policy default --pipeline-strategy-runtime fixed \\
-      --pipeline-strategy-profile-steps 4 \\
+      --pipeline-strategy-profile-steps '$WARMUP' \\
       --pipeline-strategy-trace-path '$RUN_DIR/traces/rank{rank}.json' \\
       > '$RUN_DIR/node.g$node_rank.log' 2>&1
   " &
