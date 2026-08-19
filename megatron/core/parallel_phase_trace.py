@@ -47,10 +47,11 @@ def _group_size(group: Any) -> int | None:
 class _WorkProxy:
     """Preserve the common Work interface while measuring wait completion."""
 
-    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int):
+    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int, token: int):
         self._work = work
         self._trace = trace
         self._event_id = event_id
+        self._trace_token = token
         self._waited = False
 
     def wait(self, *args: Any, **kwargs: Any) -> Any:
@@ -97,7 +98,7 @@ class _P2PWorkProxy:
         start = time.perf_counter_ns()
         result = self._work.wait(*args, **kwargs)
         self._trace.mark_p2p_request_wait(
-            id(self),
+            self._trace_token,
             wait_ms=(time.perf_counter_ns() - start) / 1e6,
             double_wait=self._waited,
         )
@@ -126,6 +127,7 @@ class ParallelPhaseTrace:
         self._group_tickets: dict[int, int] = {}
         self._p2p_requests: dict[int, int] = {}
         self._p2p_wait_counts: dict[int, int] = {}
+        self._next_request_token = 0
 
     def register_group(self, group: Any, label: str) -> None:
         key = _group_key(group)
@@ -268,8 +270,10 @@ class ParallelPhaseTrace:
         request_ids = []
         wrapped = []
         for request in values:
-            proxy = _P2PWorkProxy(request, self, event_id)
-            request_id = id(proxy)
+            with self._lock:
+                request_id = self._next_request_token
+                self._next_request_token += 1
+            proxy = _P2PWorkProxy(request, self, event_id, request_id)
             self._p2p_requests[request_id] = event_id
             self._p2p_wait_counts[request_id] = 0
             request_ids.append(request_id)
@@ -318,7 +322,7 @@ class ParallelPhaseTrace:
         parent_ids = []
         unknown = 0
         for request in values:
-            parent = self._p2p_requests.get(id(request))
+            parent = self._p2p_requests.get(getattr(request, "_trace_token", None))
             if parent is None:
                 unknown += 1
             else:
