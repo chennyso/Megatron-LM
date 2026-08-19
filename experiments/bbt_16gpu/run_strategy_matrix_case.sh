@@ -9,6 +9,7 @@ ITERS="${5:-10}"
 PLAN_PATH="${6:-}"
 GROUP_SIZE="${7:-}"
 DDP_MODE="${8:-default}"
+LAYOUT="${9:-}"
 WORLD=16
 if (( WORLD % TP != 0 || WORLD % PP != 0 || WORLD % (TP * PP) != 0 )); then
   echo "invalid factorization TP=$TP PP=$PP for world=$WORLD" >&2
@@ -20,7 +21,9 @@ if (( VPP <= 0 || LAYERS % (PP * VPP) != 0 )); then
   echo "illegal VPP=$VPP for layers=$LAYERS and PP=$PP" >&2
   exit 2
 fi
-if (( VPP > 1 )); then
+if [[ -n "$LAYOUT" ]]; then
+  VPP_ARG="--pipeline-model-parallel-layout '$LAYOUT'"
+elif (( VPP > 1 )); then
   VPP_ARG="--num-layers-per-virtual-pipeline-stage $((LAYERS / PP / VPP))"
 else
   VPP_ARG=""
