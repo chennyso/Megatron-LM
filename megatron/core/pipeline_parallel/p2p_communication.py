@@ -537,6 +537,9 @@ class P2PCommunicator:
 
         if wait_on_reqs and len(reqs) > 0:
             phase_wait_id = None
+            # The phase trace must retain the actual host-side blocking time;
+            # completion timestamps alone cannot be aggregated by iteration.
+            phase_wait_start_ns = time.perf_counter_ns() if phase_trace is not None else None
             wait_metadata = (
                 phase_trace.p2p_wait_metadata(reqs) if phase_trace is not None else {}
             )
@@ -564,7 +567,10 @@ class P2PCommunicator:
                 for req in reqs if isinstance(reqs, list) else reqs.values():
                     req.wait()
             if phase_trace is not None and phase_wait_id is not None:
-                phase_trace.finish(phase_wait_id)
+                phase_trace.finish(
+                    phase_wait_id,
+                    wait_ms=(time.perf_counter_ns() - phase_wait_start_ns) / 1e6,
+                )
             reqs = None
 
         if config.batch_p2p_comm and config.batch_p2p_sync:
