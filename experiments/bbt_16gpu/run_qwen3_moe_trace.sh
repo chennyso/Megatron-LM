@@ -11,6 +11,8 @@ TRACE_OVERRIDE="${TRACE_OVERRIDE:-true}"
 PROFILE_STEPS="${STRATEGY_PROFILE_STEPS:-4}"
 MOE_OVERLAP_OVERRIDE="${MOE_OVERLAP_OVERRIDE:-false}"
 MOE_DISPATCHER="${MOE_DISPATCHER_OVERRIDE:-alltoall}"
+P2P_OVERLAP_OVERRIDE="${P2P_OVERLAP_OVERRIDE:-true}"
+VPP_GROUP_SIZE_OVERRIDE="${VPP_GROUP_SIZE_OVERRIDE:-}"
 NSYS_TAG="${NSYS_TAG:-}"
 NSYS_NODES="${NSYS_NODES:-g5}"
 NSYS_PROFILE_START_STEP="${NSYS_PROFILE_START_STEP:-4}"
@@ -43,6 +45,19 @@ else
   echo "MOE_OVERLAP_OVERRIDE must be true or false, got $MOE_OVERLAP_OVERRIDE" >&2
   exit 2
 fi
+if [[ "$P2P_OVERLAP_OVERRIDE" == "true" ]]; then
+  P2P_ARGS=""
+elif [[ "$P2P_OVERLAP_OVERRIDE" == "false" ]]; then
+  P2P_ARGS="--no-overlap-p2p-communication"
+else
+  echo "P2P_OVERLAP_OVERRIDE must be true or false, got $P2P_OVERLAP_OVERRIDE" >&2
+  exit 2
+fi
+if [[ -n "$VPP_GROUP_SIZE_OVERRIDE" ]]; then
+  VPP_GROUP_ARGS="--microbatch-group-size-per-virtual-pipeline-stage '$VPP_GROUP_SIZE_OVERRIDE'"
+else
+  VPP_GROUP_ARGS=""
+fi
 if [[ -n "$NSYS_TAG" ]]; then
   PROFILE_ARGS="--profile --profile-step-start '$NSYS_PROFILE_START_STEP' --profile-step-end '$NSYS_PROFILE_END_STEP' --profile-ranks '$NSYS_PROFILE_RANKS' --nvtx-ranges"
 else
@@ -71,7 +86,7 @@ launch() {
       --bf16 --use-mcore-models --position-embedding-type rope --rotary-percent 1.0 --rotary-base 1000000 --tokenizer-type HuggingFaceTokenizer --tokenizer-model /models/qwen3-30B-A3B \\
       --normalization RMSNorm --swiglu --disable-bias-linear --untie-embeddings-and-output-weights --sequence-parallel --use-distributed-optimizer --mock-data $MOE_OVERLAP_ARGS \\
       --train-iters '$ITERS' --eval-iters 1 --eval-interval 1000 --log-interval 1 --lr 1e-6 --min-lr 1e-7 --lr-decay-style constant \\
-      --pipeline-strategy-policy default --pipeline-strategy-runtime fixed $STRATEGY_TRACE_ARGS $PROFILE_ARGS \\
+      --pipeline-strategy-policy default --pipeline-strategy-runtime fixed $STRATEGY_TRACE_ARGS $PROFILE_ARGS $P2P_ARGS $VPP_GROUP_ARGS \\
       > '$RUN_DIR/node.g$node_rank.log' 2>&1
   " &
 }

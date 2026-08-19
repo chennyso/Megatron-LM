@@ -63,6 +63,21 @@ although its P95 is not consistently worse. This is a reproduction of a
 known failure mode of fixed overlap policies, not evidence that Tessera has
 been improved upon.
 
+### VPP-group sensitivity of MoE EP overlap
+
+The default group for `PP=4` is four microbatches per virtual stage. Raising
+the legal VPP group to eight changes the action wave without changing model
+ownership. Two additional no-trace repeats show:
+
+| VPP group | A2A baseline median / mean (ms) | EP overlap median / mean (ms) |
+|---|---:|---:|
+| 8, repeat 1 | 2162 / 2722 | 3048 / 3084 |
+| 8, repeat 2 | 2185 / 2743 | 3057 / 3040 |
+
+This is a stable worsening, rather than a useful winner inversion. It shows
+that the penalty of fixed EP overlap depends on the VPP action wave, but it
+does not establish a new mechanism beyond existing joint-overlap work.
+
 ## Nsight mechanism evidence
 
 Nsight capture was controlled by Megatron's `cudaProfilerStart/Stop`, with
@@ -98,4 +113,3 @@ tested against default overlap, no-overlap, and Megatron DDP bucket overlap on
 the same all-to-all proxy, with no continuous trace writing. If it does not
 beat the best fixed policy on complete-step median and P95 across repeats, it
 will be discarded rather than named as a contribution.
-
