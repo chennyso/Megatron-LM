@@ -29,9 +29,10 @@ SEQ_LENGTH="${SEQ_LENGTH_OVERRIDE:-4096}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE_OVERRIDE:-1}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE_OVERRIDE:-16}"
 P2P_OVERLAP="${P2P_OVERLAP_OVERRIDE:-true}"
-NSYS_DELAY_SEC="${NSYS_DELAY_SEC:-0}"
-NSYS_DURATION_SEC="${NSYS_DURATION_SEC:-18}"
 NSYS_NODES="${NSYS_NODES:-both}"
+NSYS_PROFILE_START_STEP="${NSYS_PROFILE_START_STEP:-8}"
+NSYS_PROFILE_END_STEP="${NSYS_PROFILE_END_STEP:-14}"
+NSYS_PROFILE_RANKS="${NSYS_PROFILE_RANKS:-}"
 if (( VPP <= 0 || LAYERS % (PP * VPP) != 0 )); then
   echo "illegal VPP=$VPP for layers=$LAYERS and PP=$PP" >&2
   exit 2
@@ -103,6 +104,15 @@ else
   echo "P2P_OVERLAP_OVERRIDE must be true or false, got $P2P_OVERLAP" >&2
   exit 2
 fi
+if [[ -n "$NSYS_TAG" ]]; then
+  if [[ -z "$NSYS_PROFILE_RANKS" ]]; then
+    echo "NSYS_PROFILE_RANKS must name the global rank(s) to profile" >&2
+    exit 2
+  fi
+  PROFILE_ARGS="--profile --profile-step-start $NSYS_PROFILE_START_STEP --profile-step-end $NSYS_PROFILE_END_STEP --profile-ranks $NSYS_PROFILE_RANKS --nvtx-ranges"
+else
+  PROFILE_ARGS=""
+fi
 
 launch() {
   local pod="$1" rank="$2" log="$3"
@@ -112,7 +122,7 @@ launch() {
   fi
   local nsys_prefix=""
   if [[ -n "$NSYS_TAG" && ( "$NSYS_NODES" == "both" || "$NSYS_NODES" == "$node_label" ) ]]; then
-    nsys_prefix="nsys profile --trace=cuda,nvtx,osrt --sample=none --trace-fork-before-exec=true --force-overwrite=true --delay='$NSYS_DELAY_SEC' --duration='$NSYS_DURATION_SEC' --output '$RUN_DIR/nsys-node${rank}-${NSYS_TAG}'"
+    nsys_prefix="nsys profile --trace=cuda,nvtx,osrt --sample=none --trace-fork-before-exec=true --force-overwrite=true --capture-range=cudaProfilerApi --capture-range-end=stop --output '$RUN_DIR/nsys-node${rank}-${NSYS_TAG}'"
   fi
   kubectl exec -n "$NS" "$pod" -- bash -lc "
     set -euo pipefail
@@ -150,6 +160,7 @@ launch() {
       $GROUP_SIZE_ARG \
       $DDP_ARGS \
       $P2P_ARGS \
+      $PROFILE_ARGS \
       --pipeline-strategy-profile-steps 4 \
       --pipeline-strategy-trace-path '$RUN_DIR/traces/rank{rank}.json' \
       > '$log' 2>&1
