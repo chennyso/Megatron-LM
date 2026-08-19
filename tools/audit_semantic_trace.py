@@ -102,7 +102,11 @@ def _p2p_check(events: list[dict]) -> dict:
         observed = waits_by_parent[(event.get("rank"), event_id)]
         waited = event.get("p2p_waited_count")
         double_waits = int(event.get("p2p_double_wait_count", 0) or 0)
-        if observed != request_count or (waited is not None and int(waited) != request_count) or double_waits:
+        # Overlap VPP waits each request directly through the proxy and may not
+        # emit a grouped p2p_wait event.  Prefer the per-request proxy count
+        # when available; grouped parent IDs are a fallback for old traces.
+        lifecycle_count = int(waited) if waited is not None else observed
+        if lifecycle_count != request_count or double_waits:
             request_lifecycle_errors.append(
                 {
                     "rank": event.get("rank"),
