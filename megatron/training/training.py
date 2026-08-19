@@ -2237,6 +2237,10 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
                 value for key, value in waits.items()
                 if key.startswith("PP_FWD|forward|chunk=1|")
             )
+            print_rank_0(
+                f"[trace-adaptive-vpp] observed backward_chunk2={backward_chunk2:.3f} "
+                f"forward_chunk1={forward_chunk1:.3f} current={current_group}"
+            )
             if current_group == 4 and backward_chunk2 > 120.0:
                 next_group = 8
             elif current_group == 8 and forward_chunk1 > 100.0:
