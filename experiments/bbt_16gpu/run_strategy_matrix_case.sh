@@ -21,6 +21,17 @@ if (( WORLD % TP != 0 || WORLD % PP != 0 || WORLD % CP != 0 || WORLD % (TP * PP 
 fi
 DP=$((WORLD / TP / PP / CP))
 LAYERS="${LAYERS_OVERRIDE:-36}"
+HIDDEN_SIZE="${HIDDEN_SIZE_OVERRIDE:-4096}"
+FFN_HIDDEN_SIZE="${FFN_HIDDEN_SIZE_OVERRIDE:-12288}"
+NUM_ATTENTION_HEADS="${NUM_ATTENTION_HEADS_OVERRIDE:-32}"
+NUM_QUERY_GROUPS="${NUM_QUERY_GROUPS_OVERRIDE:-8}"
+SEQ_LENGTH="${SEQ_LENGTH_OVERRIDE:-4096}"
+MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE_OVERRIDE:-1}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE_OVERRIDE:-16}"
+P2P_OVERLAP="${P2P_OVERLAP_OVERRIDE:-true}"
+NSYS_DELAY_SEC="${NSYS_DELAY_SEC:-0}"
+NSYS_DURATION_SEC="${NSYS_DURATION_SEC:-18}"
+NSYS_NODES="${NSYS_NODES:-both}"
 if (( VPP <= 0 || LAYERS % (PP * VPP) != 0 )); then
   echo "illegal VPP=$VPP for layers=$LAYERS and PP=$PP" >&2
   exit 2
@@ -84,12 +95,24 @@ if [[ -n "$HCP_SIZES" ]]; then
 else
   HCP_ARG=""
 fi
+if [[ "$P2P_OVERLAP" == "true" ]]; then
+  P2P_ARGS="--overlap-p2p-communication"
+elif [[ "$P2P_OVERLAP" == "false" ]]; then
+  P2P_ARGS=""
+else
+  echo "P2P_OVERLAP_OVERRIDE must be true or false, got $P2P_OVERLAP" >&2
+  exit 2
+fi
 
 launch() {
   local pod="$1" rank="$2" log="$3"
+  local node_label="g5"
+  if (( rank == 1 )); then
+    node_label="g6"
+  fi
   local nsys_prefix=""
-  if [[ -n "$NSYS_TAG" ]]; then
-    nsys_prefix="nsys profile --trace=cuda,nvtx,osrt --sample=none --trace-fork-before-exec=true --force-overwrite=true --duration=18 --output '$RUN_DIR/nsys-node${rank}-${NSYS_TAG}'"
+  if [[ -n "$NSYS_TAG" && ( "$NSYS_NODES" == "both" || "$NSYS_NODES" == "$node_label" ) ]]; then
+    nsys_prefix="nsys profile --trace=cuda,nvtx,osrt --sample=none --trace-fork-before-exec=true --force-overwrite=true --delay='$NSYS_DELAY_SEC' --duration='$NSYS_DURATION_SEC' --output '$RUN_DIR/nsys-node${rank}-${NSYS_TAG}'"
   fi
   kubectl exec -n "$NS" "$pod" -- bash -lc "
     set -euo pipefail
@@ -109,10 +132,10 @@ launch() {
       --context-parallel-size '$CP' \
       $CP_COMM_ARG \
       $HCP_ARG \
-      --num-layers '$LAYERS' --hidden-size 4096 --ffn-hidden-size 12288 \
-      --num-attention-heads 32 --group-query-attention --num-query-groups 8 \
-      --seq-length 4096 --max-position-embeddings 40960 \
-      --micro-batch-size 1 --global-batch-size 16 --bf16 \
+      --num-layers '$LAYERS' --hidden-size '$HIDDEN_SIZE' --ffn-hidden-size '$FFN_HIDDEN_SIZE' \
+      --num-attention-heads '$NUM_ATTENTION_HEADS' --group-query-attention --num-query-groups '$NUM_QUERY_GROUPS' \
+      --seq-length '$SEQ_LENGTH' --max-position-embeddings 40960 \
+      --micro-batch-size '$MICRO_BATCH_SIZE' --global-batch-size '$GLOBAL_BATCH_SIZE' --bf16 \
       --use-mcore-models --position-embedding-type rope --rotary-percent 1.0 \
       --rotary-base 1000000 --tokenizer-type HuggingFaceTokenizer \
       --tokenizer-model /models/qwen3-8B --no-masked-softmax-fusion \
@@ -126,6 +149,7 @@ launch() {
       $STRATEGY_PLAN_ARG \
       $GROUP_SIZE_ARG \
       $DDP_ARGS \
+      $P2P_ARGS \
       --pipeline-strategy-profile-steps 4 \
       --pipeline-strategy-trace-path '$RUN_DIR/traces/rank{rank}.json' \
       > '$log' 2>&1
