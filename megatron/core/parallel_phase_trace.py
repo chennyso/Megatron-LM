@@ -116,6 +116,16 @@ class ParallelPhaseTrace:
         except (ImportError, RuntimeError):
             return
 
+    def set_collective_label(self, group: Any, label: str) -> None:
+        """Explicitly label a non-model-parallel communicator.
+
+        Optimizer and finalize-model-grad paths can use a process group that
+        is intentionally distinct from Megatron's canonical DP group.  Those
+        paths should register their semantic owner at the call site instead
+        of forcing the trace analyzer to infer ownership from world size.
+        """
+        self.register_group(group, label)
+
     def _action_class(self, group: Any, op: str) -> str:
         label = self._group_labels.get(_group_key(group), "UNKNOWN")
         suffix = {

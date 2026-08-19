@@ -32,6 +32,11 @@ from ..utils import is_torch_min_version, log_on_each_pipeline_stage
 from .distributed_data_parallel_config import DistributedDataParallelConfig
 from .reduce_scatter_with_fp32_accumulation import reduce_scatter_with_fp32_accumulation
 
+try:
+    from megatron.core.parallel_phase_trace import get_active as get_active_phase_trace
+except ImportError:
+    get_active_phase_trace = None
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -643,6 +648,14 @@ class _ParamAndGradBucketGroup:
         else:
             communication_group = self.data_parallel_group
 
+        # Distributed-optimizer groups are distinct process-group objects from
+        # Megatron's canonical DP group.  Register their semantic owner at the
+        # call site so the process-level trace cannot confuse DP reduce-scatter
+        # with TP reduce-scatter merely because both use the same Python API.
+        phase_trace = get_active_phase_trace() if get_active_phase_trace is not None else None
+        if phase_trace is not None:
+            phase_trace.set_collective_label(communication_group, "DP")
+
         # Coalesce communication kernels across buckets in the bucket group.
         grad_reduce_handle = None
         with stream_context, _coalescing_manager(communication_group, async_ops=async_op) as cm:
@@ -677,6 +690,10 @@ class _ParamAndGradBucketGroup:
             and self.ddp_config.num_distributed_optimizer_instances > 1
         ):
             assert self.inter_distributed_optimizer_instance_group is not None
+            if phase_trace is not None:
+                phase_trace.set_collective_label(
+                    self.inter_distributed_optimizer_instance_group, "DP"
+                )
             # Create a new coalescing manager for the inter-instance all-reduce.
             with (
                 stream_context,
