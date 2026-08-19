@@ -1,0 +1,45 @@
+{
+  "trace_files": 16,
+  "events": 11528,
+  "action_classes": {
+    "UNKNOWN_AR": 128,
+    "TP_AG": 5120,
+    "TP_RS": 4096,
+    "PP_FWD": 1464,
+    "PP_BWD": 372,
+    "DP_RS": 32,
+    "TP_AR": 304,
+    "DP_AR": 12
+  },
+  "unknown_collective_events": 128,
+  "negative_duration_events": 0,
+  "p2p": {
+    "forward": {
+      "send_messages": 672,
+      "recv_messages": 672,
+      "edge_payload_mismatch": []
+    },
+    "backward": {
+      "send_messages": 224,
+      "recv_messages": 224,
+      "edge_payload_mismatch": []
+    },
+    "request_lifecycle": {
+      "issue_events_with_requests": 236,
+      "unknown_request_count": 0,
+      "errors": [],
+      "pass": true
+    }
+  },
+  "collective_tickets": {
+    "groups": 80,
+    "monotonicity_violations": [],
+    "pass": true
+  },
+  "dp_bucket_replica_shape": {
+    "coordinates": 8,
+    "replica_shape_mismatches": [],
+    "pass": true
+  },
+  "claim_boundary": "No novel atomicity finding. Stage payload asymmetry is a known performance symptom; async stream/order semantics require additional instrumentation."
+}
