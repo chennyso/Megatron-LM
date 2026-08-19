@@ -2243,7 +2243,7 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
             )
             if current_group == 4 and backward_chunk2 > 80.0:
                 next_group = 8
-            elif current_group == 8 and forward_chunk1 > 100.0:
+            elif current_group == 8 and forward_chunk1 > 15.0:
                 next_group = 4
         choice = torch.tensor(
             [next_group],
