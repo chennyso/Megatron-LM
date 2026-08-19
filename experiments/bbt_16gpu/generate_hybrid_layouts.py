@@ -1,60 +1,96 @@
 #!/usr/bin/env python3
-"""Enumerate composition-preserving fVPP layouts for the GDN/attention case.
+"""Generate semantics-preserving fVPP boundary placements.
 
-Each segment has four layer symbols: two GDN layers, one MLP layer, and one
-attention layer.  The only degree of freedom is the position of the
-attention layer inside its segment.  Thus every generated layout has exactly
-the same model layer multiset and the same segment length; only VPP placement
-changes.
+The global hybrid layer sequence is immutable. Candidates insert only ``|``
+boundaries into that sequence, so they change PP/VPP ownership without
+changing model architecture or parameter order.
 """
 
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 from pathlib import Path
 
 
-POSITIONS = {
-    "first": "*G-G",
-    "middle": "G*-G",
-    "last": "G-G*",
-}
+def _compositions(total: int, parts: int, minimum: int, maximum: int):
+    if parts == 1:
+        if minimum <= total <= maximum:
+            yield (total,)
+        return
+    for first in range(minimum, maximum + 1):
+        remaining = total - first
+        if minimum * (parts - 1) <= remaining <= maximum * (parts - 1):
+            for suffix in _compositions(remaining, parts - 1, minimum, maximum):
+                yield (first,) + suffix
 
 
-def layouts(segments: int, limit: int | None = None) -> list[dict[str, object]]:
-    names = tuple(POSITIONS)
+def _segments(sequence: str, counts: tuple[int, ...]) -> list[str]:
+    cursor = 0
     result = []
-    for index, choice in enumerate(itertools.product(names, repeat=segments)):
-        pattern = "|".join(POSITIONS[item] for item in choice)
-        # Every segment is four layers and has the same multiset.  These
-        # checks make the invariant explicit and protect future edits.
-        flat = pattern.replace("|", "")
-        assert len(flat) == segments * 4
-        assert flat.count("G") == segments * 2
-        assert flat.count("*") == segments
-        assert flat.count("-") == segments
-        result.append({"id": index, "choices": list(choice), "pattern": pattern})
-        if limit is not None and len(result) >= limit:
-            break
+    for count in counts:
+        result.append(sequence[cursor : cursor + count])
+        cursor += count
+    assert cursor == len(sequence)
+    return result
+
+
+def layouts(
+    sequence: str,
+    pp_size: int = 4,
+    vpp_size: int = 2,
+    minimum: int = 2,
+    maximum: int = 6,
+    require_rank_balance: bool = True,
+) -> list[dict[str, object]]:
+    segment_count = pp_size * vpp_size
+    result = []
+    for counts in _compositions(len(sequence), segment_count, minimum, maximum):
+        rank_counts = [
+            sum(counts[chunk * pp_size + rank] for chunk in range(vpp_size))
+            for rank in range(pp_size)
+        ]
+        if require_rank_balance and len(set(rank_counts)) != 1:
+            continue
+        segment_list = _segments(sequence, counts)
+        pattern = "|".join(segment_list)
+        assert pattern.replace("|", "") == sequence
+        result.append({
+            "id": len(result),
+            "counts": list(counts),
+            "rank_counts": rank_counts,
+            "segments": segment_list,
+            "pattern": pattern,
+        })
     return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--segments", type=int, default=8)
-    parser.add_argument("--limit", type=int)
+    parser.add_argument("--sequence", default="G-G*" * 8)
+    parser.add_argument("--pp-size", type=int, default=4)
+    parser.add_argument("--vpp-size", type=int, default=2)
+    parser.add_argument("--min-segment-layers", type=int, default=2)
+    parser.add_argument("--max-segment-layers", type=int, default=6)
+    parser.add_argument("--allow-rank-imbalance", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     payload = {
-        "segments": args.segments,
-        "positions": POSITIONS,
-        "layouts": layouts(args.segments, args.limit),
+        "sequence": args.sequence,
+        "pp_size": args.pp_size,
+        "vpp_size": args.vpp_size,
+        "layouts": layouts(
+            args.sequence,
+            args.pp_size,
+            args.vpp_size,
+            args.min_segment_layers,
+            args.max_segment_layers,
+            not args.allow_rank_imbalance,
+        ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps({"layouts": len(payload["layouts"]), "segments": args.segments}))
+    print(json.dumps({"layouts": len(payload["layouts"]), "layers": len(args.sequence)}))
     return 0
 
 

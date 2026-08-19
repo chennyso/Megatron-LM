@@ -18,18 +18,16 @@ def _load():
     return module
 
 
-def test_composition_preserving_layouts():
+def test_semantics_preserving_layouts():
     module = _load()
-    result = module.layouts(2)
-    assert len(result) == 9
+    sequence = "G-G*" * 2
+    result = module.layouts(sequence, pp_size=2, vpp_size=2, minimum=2, maximum=3)
+    assert result
     for item in result:
-        flat = str(item["pattern"]).replace("|", "")
-        assert len(flat) == 8
-        assert flat.count("G") == 4
-        assert flat.count("*") == 2
-        assert flat.count("-") == 2
+        assert str(item["pattern"]).replace("|", "") == sequence
+        assert item["rank_counts"] == [4, 4]
 
 
 if __name__ == "__main__":
-    test_composition_preserving_layouts()
+    test_semantics_preserving_layouts()
     print("hybrid layout search unit test passed")
