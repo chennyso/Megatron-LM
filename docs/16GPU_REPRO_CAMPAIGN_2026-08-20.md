@@ -100,8 +100,11 @@ VPP group, two no-trace repeats gave:
 | VPP2, repeat 2 | 2578 / 3519 | 2732 / 3093 |
 
 EP overlap consistently sacrifices mean step time (about 6%) while reducing
-the observed P95 (about 12%). This is a repeatable throughput-tail tradeoff,
-not an end-to-end improvement. A route-conditioned selector would require a
+the observed P95 in two short runs (about 12%). A paired 64-iteration control
+does **not** reproduce that P95 result: baseline is 2606.9 ms mean / 3345.2
+ms P95 / 3339.4 ms CVaR80, whereas EP overlap is 2849.6 / 3411.8 / 3301.6 ms.
+Only the small CVaR80 difference remains, so neither throughput nor tail
+improvement is supported. A route-conditioned selector would require a
 predictive signal available before the choice and a frontier-safe per-period
 mode switch; neither has been demonstrated here.
 
