@@ -12,6 +12,7 @@ DDP_MODE="${8:-default}"
 LAYOUT="${9:-}"
 NSYS_TAG="${10:-}"
 CP="${CP_OVERRIDE:-1}"
+CP_COMM_TYPE="${CP_COMM_TYPE_OVERRIDE:-}"
 WORLD=16
 if (( WORLD % TP != 0 || WORLD % PP != 0 || WORLD % CP != 0 || WORLD % (TP * PP * CP) != 0 )); then
   echo "invalid factorization TP=$TP PP=$PP CP=$CP for world=$WORLD" >&2
@@ -71,6 +72,11 @@ if (( TP > 1 )); then
 else
   SP_ARG=""
 fi
+if [[ -n "$CP_COMM_TYPE" ]]; then
+  CP_COMM_ARG="--cp-comm-type $CP_COMM_TYPE"
+else
+  CP_COMM_ARG=""
+fi
 
 launch() {
   local pod="$1" rank="$2" log="$3"
@@ -94,6 +100,7 @@ launch() {
       --tensor-model-parallel-size '$TP' \
       --pipeline-model-parallel-size '$PP' \
       --context-parallel-size '$CP' \
+      $CP_COMM_ARG \
       --num-layers '$LAYERS' --hidden-size 4096 --ffn-hidden-size 12288 \
       --num-attention-heads 32 --group-query-attention --num-query-groups 8 \
       --seq-length 4096 --max-position-embeddings 40960 \
