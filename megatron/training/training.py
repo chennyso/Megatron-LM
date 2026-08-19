@@ -1800,12 +1800,25 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
         # disabled for non-first chunks, when overlap_param_gather_with_optimizer_step
         # is on, or for non-zero pipeline-parallel ranks.
         pp_rank = get_pg_rank(pg_collection.pp)
-        per_chunk_disable_bucketing = [
-            (chunk_idx > 0) or args.overlap_param_gather_with_optimizer_step
-            for chunk_idx in range(len(model))
-        ]
+        vpp_bucket_policy = getattr(args, 'vpp_bucket_policy', 'default')
+        if vpp_bucket_policy == 'all-chunks':
+            # VPP reverses chunk order during backward.  The legacy policy
+            # disables all but the first chunk because it assumes those
+            # gradients are off the critical path.  That assumption is false
+            # when VPP chunk readiness interleaves with PP P2P waves.
+            per_chunk_disable_bucketing = [
+                args.overlap_param_gather_with_optimizer_step
+                for _chunk_idx in range(len(model))
+            ]
+        else:
+            per_chunk_disable_bucketing = [
+                (chunk_idx > 0) or args.overlap_param_gather_with_optimizer_step
+                for chunk_idx in range(len(model))
+            ]
         per_chunk_bucket_sizes = [
-            None if (disable or pp_rank > 0) else ddp_config.bucket_size
+            None
+            if (disable or (pp_rank > 0 and vpp_bucket_policy != 'all-chunks'))
+            else ddp_config.bucket_size
             for disable in per_chunk_disable_bucketing
         ]
 
