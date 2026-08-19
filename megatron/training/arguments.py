@@ -2853,7 +2853,11 @@ def _add_distributed_args(parser):
                        type=str, default='fixed',
                        choices=['fixed', 'ready-set', 'bcp-ready'],
                        help=('Pipeline strategy runtime. ready-set is conservative without tagged P2P; '
-                       'bcp-ready can run local-safe bubble-fill work before blocking P2P waits.'))
+                             'bcp-ready can run local-safe bubble-fill work before blocking P2P waits.'))
+    add_strategy_arg('--pipeline-strategy-adaptive-vpp-group',
+                       action='store_true', default=False,
+                       help=('At each complete step boundary, select a legal VPP microbatch group '
+                             'from P2P wait summaries and broadcast the choice from rank 0.'))
     add_strategy_arg('--pipeline-strategy-p2p-credit-budget',
                        type=int, default=None,
                        help='Optional outstanding P2P request budget for bcp-ready runtime.')

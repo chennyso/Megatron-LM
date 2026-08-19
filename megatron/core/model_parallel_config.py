@@ -390,6 +390,9 @@ class ModelParallelConfig:
     pipeline_strategy_runtime: str = "fixed"
     """Pipeline strategy runtime: fixed, conservative ready-set, or BCP-ready bubble fill."""
 
+    pipeline_strategy_adaptive_vpp_group: bool = False
+    """Select between verified VPP microbatch group sizes only at step boundaries."""
+
     pipeline_strategy_p2p_credit_budget: Optional[int] = None
     """Optional outstanding P2P request budget for BCP-ready bubble filling."""
 

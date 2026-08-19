@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 _PATCH_LOCK = threading.Lock()
 _ACTIVE: "ParallelPhaseTrace | None" = None
+_LAST_P2P_WAIT_SUMMARY: dict[str, float] = {}
 
 
 def _group_key(group: Any) -> int | None:
@@ -336,6 +337,30 @@ class ParallelPhaseTrace:
     def flush(self) -> None:
         if not self.events:
             return
+        summary: dict[str, float] = {}
+        for event in self.events:
+            if event.get("op") != "p2p_wait":
+                continue
+            context = event.get("context") or {}
+            direction = "".join(
+                label
+                for label, enabled in (
+                    ("sp", event.get("send_prev")),
+                    ("rp", event.get("recv_prev")),
+                    ("sn", event.get("send_next")),
+                    ("rn", event.get("recv_next")),
+                )
+                if enabled
+            ) or "none"
+            key = (
+                f"{event.get('action_class', 'PP_UNKNOWN')}|"
+                f"{context.get('phase', 'unknown')}|"
+                f"chunk={context.get('vp_chunk', 'unknown')}|{direction}"
+            )
+            summary[key] = summary.get(key, 0.0) + float(event.get("wait_ms", 0.0))
+        if summary:
+            global _LAST_P2P_WAIT_SUMMARY
+            _LAST_P2P_WAIT_SUMMARY = summary
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             for event in self.events:
@@ -480,4 +505,16 @@ def get_active() -> ParallelPhaseTrace | None:
     return _ACTIVE
 
 
-__all__ = ["ParallelPhaseTrace", "install_from_config", "install_persistent", "get_active"]
+def get_last_p2p_wait_summary() -> dict[str, float]:
+    """Return the last schedule-local P2P wait totals in this process."""
+
+    return dict(_LAST_P2P_WAIT_SUMMARY)
+
+
+__all__ = [
+    "ParallelPhaseTrace",
+    "install_from_config",
+    "install_persistent",
+    "get_active",
+    "get_last_p2p_wait_summary",
+]

@@ -58,7 +58,10 @@ from megatron.core.optimizer.layer_wise_optimizer import (
     tag_params_for_buffer_routing,
 )
 from megatron.core.optimizer_param_scheduler import get_canonical_lr_for_logging
-from megatron.core.parallel_phase_trace import get_active as get_active_phase_trace
+from megatron.core.parallel_phase_trace import (
+    get_active as get_active_phase_trace,
+    get_last_p2p_wait_summary,
+)
 
 from .log_handler import CustomHandler
 
@@ -2217,6 +2220,32 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
     """
     args = get_args()
     timers = get_timers()
+
+    # A VPP table has no cross-step activation or collective state. Restrict
+    # adaptation to this boundary and broadcast one legal group size before a
+    # schedule starts, so all ranks retain the same P2P/collective prefix.
+    if getattr(config, "pipeline_strategy_adaptive_vpp_group", False):
+        current_group = int(config.microbatch_group_size_per_vp_stage)
+        next_group = current_group
+        if torch.distributed.get_rank() == 0:
+            waits = get_last_p2p_wait_summary()
+            backward_chunk2 = waits.get("PP_BWD|backward|chunk=2|sprn", 0.0)
+            forward_chunk1 = waits.get("PP_FWD|forward|chunk=1|rpsn", 0.0)
+            if current_group == 4 and backward_chunk2 > 120.0:
+                next_group = 8
+            elif current_group == 8 and forward_chunk1 > 100.0:
+                next_group = 4
+        choice = torch.tensor(
+            [next_group],
+            dtype=torch.int64,
+            device=torch.device("cuda", torch.cuda.current_device()),
+        )
+        torch.distributed.broadcast(choice, src=0)
+        config.microbatch_group_size_per_vp_stage = int(choice.item())
+        if torch.distributed.get_rank() == 0:
+            print_rank_0(
+                f"[trace-adaptive-vpp] iteration={iteration} group={config.microbatch_group_size_per_vp_stage}"
+            )
 
     rerun_state_machine = get_rerun_state_machine()
     save_params_in_this_iteration = (args.save_params_interval is not None and
