@@ -522,6 +522,7 @@ class P2PCommunicator:
                 next_pipeline_rank=next_rank,
             )
         if phase_trace is not None and phase_issue_id is not None:
+            p2p_reqs = phase_trace.register_p2p_requests(phase_issue_id, p2p_reqs)
             phase_trace.finish(phase_issue_id)
         if isinstance(p2p_reqs, list):
             reqs.extend(p2p_reqs)
@@ -530,12 +531,16 @@ class P2PCommunicator:
 
         if wait_on_reqs and len(reqs) > 0:
             phase_wait_id = None
+            wait_metadata = (
+                phase_trace.p2p_wait_metadata(reqs) if phase_trace is not None else {}
+            )
             if phase_trace is not None:
                 phase_wait_id = phase_trace.start(
                     "p2p_wait", 0, pp_group,
                     action_class=phase_action,
                     event_kind="completion_wait",
                     **trace_metadata,
+                    **wait_metadata,
                     prev_pipeline_rank=prev_rank,
                     next_pipeline_rank=next_rank,
                 )

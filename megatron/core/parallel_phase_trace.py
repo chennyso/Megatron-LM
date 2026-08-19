@@ -54,15 +54,55 @@ class _WorkProxy:
         self._waited = False
 
     def wait(self, *args: Any, **kwargs: Any) -> Any:
+        start_wall = time.time_ns()
         start = time.perf_counter_ns()
+        wait_stream = self._trace._current_stream_id()
+        completed_before_wait = None
+        try:
+            completed_before_wait = bool(self._work.is_completed())
+        except Exception:
+            pass
         result = self._work.wait(*args, **kwargs)
         if not self._waited:
-            self._trace.finish(self._event_id, (time.perf_counter_ns() - start) / 1e6)
+            self._trace.finish(
+                self._event_id,
+                (time.perf_counter_ns() - start) / 1e6,
+                wait_start_ts_ns=start_wall,
+                wait_end_ts_ns=time.time_ns(),
+                wait_thread_id=threading.get_ident(),
+                wait_stream_id=wait_stream,
+                completed_before_wait=completed_before_wait,
+                wait_count=1,
+            )
             self._waited = True
         return result
 
     def is_completed(self) -> bool:
         return bool(self._work.is_completed())
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._work, name)
+
+
+class _P2PWorkProxy:
+    """Observe deferred P2P request waits without changing request semantics."""
+
+    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int):
+        self._work = work
+        self._trace = trace
+        self._event_id = event_id
+        self._waited = False
+
+    def wait(self, *args: Any, **kwargs: Any) -> Any:
+        start = time.perf_counter_ns()
+        result = self._work.wait(*args, **kwargs)
+        self._trace.mark_p2p_request_wait(
+            id(self),
+            wait_ms=(time.perf_counter_ns() - start) / 1e6,
+            double_wait=self._waited,
+        )
+        self._waited = True
+        return result
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._work, name)
@@ -83,6 +123,9 @@ class ParallelPhaseTrace:
         self._next_id = 0
         self._lock = threading.Lock()
         self._group_labels: dict[int, str] = {}
+        self._group_tickets: dict[int, int] = {}
+        self._p2p_requests: dict[int, int] = {}
+        self._p2p_wait_counts: dict[int, int] = {}
 
     def register_group(self, group: Any, label: str) -> None:
         key = _group_key(group)
@@ -141,6 +184,24 @@ class ParallelPhaseTrace:
         }.get(op, op)
         return f"{label}_{suffix}"
 
+    @staticmethod
+    def _current_stream_id() -> int | None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return int(torch.cuda.current_stream().cuda_stream)
+        except Exception:
+            pass
+        return None
+
+    def _next_group_ticket(self, group: Any) -> int:
+        key = _group_key(group)
+        with self._lock:
+            ticket = self._group_tickets.get(key, 0)
+            self._group_tickets[key] = ticket + 1
+        return ticket
+
     def set_context(self, **values: Any) -> None:
         # Context updates are incremental: schedule metadata (PP/TP/DP rank,
         # VPP size) must survive per-microbatch phase updates.
@@ -157,6 +218,11 @@ class ParallelPhaseTrace:
         return event_id
 
     def start(self, op: str, payload_bytes: int, group: Any, **metadata: Any) -> int:
+        metadata.setdefault("thread_id", threading.get_ident())
+        metadata.setdefault("stream_id", self._current_stream_id())
+        metadata.setdefault("group_ticket", self._next_group_ticket(group))
+        metadata.setdefault("group_key", _group_key(group))
+        metadata.setdefault("issue_monotonic_ns", time.perf_counter_ns())
         return self._record(
             {
                 "name": "collective_issue",
@@ -169,7 +235,8 @@ class ParallelPhaseTrace:
         )
 
     def finish(
-        self, event_id: int, wait_ms: float | None = None, api_ms: float | None = None
+        self, event_id: int, wait_ms: float | None = None, api_ms: float | None = None,
+        **metadata: Any,
     ) -> None:
         with self._lock:
             for event in reversed(self.events):
@@ -178,8 +245,89 @@ class ParallelPhaseTrace:
                         event["wait_ms"] = float(wait_ms)
                     if api_ms is not None:
                         event["api_ms"] = float(api_ms)
+                    event.update(metadata)
                     event["complete_ts_ns"] = time.time_ns()
                     return
+
+    def update(self, event_id: int, **metadata: Any) -> None:
+        """Attach late metadata to an already-issued event."""
+        with self._lock:
+            for event in reversed(self.events):
+                if event.get("event_id") == event_id:
+                    event.update(metadata)
+                    return
+
+    def register_p2p_requests(self, event_id: int, requests: Any) -> Any:
+        """Bind returned P2P work objects to their issue event."""
+        if isinstance(requests, dict):
+            values = list(requests.values())
+        elif isinstance(requests, (list, tuple)):
+            values = list(requests)
+        else:
+            values = []
+        request_ids = []
+        wrapped = []
+        for request in values:
+            proxy = _P2PWorkProxy(request, self, event_id)
+            request_id = id(proxy)
+            self._p2p_requests[request_id] = event_id
+            self._p2p_wait_counts[request_id] = 0
+            request_ids.append(request_id)
+            wrapped.append(proxy)
+        self.update(event_id, request_count=len(values), request_ids=request_ids)
+        if isinstance(requests, dict):
+            return {key: proxy for key, proxy in zip(requests.keys(), wrapped)}
+        if isinstance(requests, tuple):
+            return tuple(wrapped)
+        if isinstance(requests, list):
+            return wrapped
+        return requests
+
+    def mark_p2p_request_wait(self, request_id: int, *, wait_ms: float, double_wait: bool) -> None:
+        event_id = self._p2p_requests.get(request_id)
+        if event_id is None:
+            return
+        count = self._p2p_wait_counts.get(request_id, 0) + 1
+        self._p2p_wait_counts[request_id] = count
+        self.update(
+            event_id,
+            p2p_waited_count=sum(
+                value for request, value in self._p2p_wait_counts.items()
+                if self._p2p_requests.get(request) == event_id
+            ),
+            p2p_double_wait_count=(
+                sum(
+                    1 for request, value in self._p2p_wait_counts.items()
+                    if self._p2p_requests.get(request) == event_id and value > 1
+                )
+            ),
+            last_p2p_wait_ms=float(wait_ms),
+            p2p_wait_thread_id=threading.get_ident(),
+            p2p_wait_stream_id=self._current_stream_id(),
+            p2p_wait_end_ts_ns=time.time_ns(),
+            double_wait=bool(double_wait),
+        )
+
+    def p2p_wait_metadata(self, requests: Any) -> dict[str, Any]:
+        if isinstance(requests, dict):
+            values = list(requests.values())
+        elif isinstance(requests, (list, tuple)):
+            values = list(requests)
+        else:
+            values = []
+        parent_ids = []
+        unknown = 0
+        for request in values:
+            parent = self._p2p_requests.get(id(request))
+            if parent is None:
+                unknown += 1
+            else:
+                parent_ids.append(parent)
+        return {
+            "request_count": len(values),
+            "request_parent_event_ids": parent_ids,
+            "unknown_request_count": unknown,
+        }
 
     def flush(self) -> None:
         if not self.events:
