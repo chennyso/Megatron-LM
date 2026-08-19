@@ -43,11 +43,13 @@ case "$DDP_MODE" in
   default) DDP_ARGS="" ;;
   overlap4) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4" ;;
   overlap8) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8" ;;
+  overlap4_p2p) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --overlap-p2p-communication" ;;
+  overlap8_p2p) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8 --overlap-p2p-communication" ;;
   allchunks4) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --vpp-bucket-policy all-chunks" ;;
   allchunks8) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8 --vpp-bucket-policy all-chunks" ;;
   rank0chunks4) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --vpp-bucket-policy rank0-all-chunks" ;;
   rank0chunks8) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8 --vpp-bucket-policy rank0-all-chunks" ;;
-  *) echo "unsupported ddp_mode=$DDP_MODE (expected default|overlap4|overlap8|rank0chunks4|rank0chunks8|allchunks4|allchunks8)" >&2; exit 2 ;;
+  *) echo "unsupported ddp_mode=$DDP_MODE (expected default|overlap4|overlap8|overlap4_p2p|overlap8_p2p|rank0chunks4|rank0chunks8|allchunks4|allchunks8)" >&2; exit 2 ;;
 esac
 
 NS=default
