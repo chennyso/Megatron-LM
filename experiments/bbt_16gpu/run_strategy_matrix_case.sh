@@ -10,13 +10,14 @@ PLAN_PATH="${6:-}"
 GROUP_SIZE="${7:-}"
 DDP_MODE="${8:-default}"
 LAYOUT="${9:-}"
+NSYS_TAG="${10:-}"
 WORLD=16
 if (( WORLD % TP != 0 || WORLD % PP != 0 || WORLD % (TP * PP) != 0 )); then
   echo "invalid factorization TP=$TP PP=$PP for world=$WORLD" >&2
   exit 2
 fi
 DP=$((WORLD / TP / PP))
-LAYERS=36
+LAYERS="${LAYERS_OVERRIDE:-36}"
 if (( VPP <= 0 || LAYERS % (PP * VPP) != 0 )); then
   echo "illegal VPP=$VPP for layers=$LAYERS and PP=$PP" >&2
   exit 2
@@ -69,6 +70,10 @@ fi
 
 launch() {
   local pod="$1" rank="$2" log="$3"
+  local nsys_prefix=""
+  if [[ -n "$NSYS_TAG" ]]; then
+    nsys_prefix="nsys profile --trace=cuda,nvtx,osrt --sample=none --trace-fork-before-exec=true --force-overwrite=true --duration=18 --output '$RUN_DIR/nsys-node${rank}-${NSYS_TAG}'"
+  fi
   kubectl exec -n "$NS" "$pod" -- bash -lc "
     set -euo pipefail
     cd '$CODE'
@@ -79,7 +84,7 @@ launch() {
     export CUDA_DEVICE_MAX_CONNECTIONS=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     export NCCL_IB_HCA=\$(ls /sys/class/net/net1/device/infiniband/ | head -1)
     unset LD_PRELOAD NCCL_HOOK_ENABLE NCCL_HOOK_K8S_MODE NCCL_HOOK_COORDINATOR_ADDR NCCL_HOOK_POD_UID NCCL_HOOK_STATE_DIR NCCL_HOOK_LOG_DIR NCCL_HOOK_LOG_LEVEL G10_METRICS_PORT MIRAGE_DAEMON_SOCKET
-    '$PY' -m torch.distributed.run --nnodes=2 --nproc_per_node=8 --node_rank=$rank \
+    $nsys_prefix '$PY' -m torch.distributed.run --nnodes=2 --nproc_per_node=8 --node_rank=$rank \
       --master_addr='$MASTER' --master_port='$PORT' --rdzv_backend=static \
       pretrain_gpt.py \
       --tensor-model-parallel-size '$TP' \
