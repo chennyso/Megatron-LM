@@ -12,7 +12,7 @@ G5="$(kubectl get pod -n "$NS" -l app.kubernetes.io/name=chenny-g5-g6-16gpu-rese
 G6="$(kubectl get pod -n "$NS" -l app.kubernetes.io/name=chenny-g5-g6-16gpu-reservation,bbt.sspu.edu.cn/reservation-node=g6 -o jsonpath='{.items[0].metadata.name}')"
 MASTER="$(kubectl get pod -n "$NS" "$G5" -o jsonpath='{.status.podIP}')"
 RUN_DIR="/workspace/runs/phaseweaver-20260818/results/hybrid-fvpp-${RUN_ID}"
-CODE=/workspace/runs/phaseweaver-20260818/code
+CODE="${CODE_OVERRIDE:-/workspace/runs/phaseweaver-20260818/code}"
 PY=/workspace/runs/transitpipe-20260817-232632/venv/bin/python
 PORT="${PORT_OVERRIDE:-29780}"
 
