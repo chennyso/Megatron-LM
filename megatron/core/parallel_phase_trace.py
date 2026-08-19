@@ -47,11 +47,10 @@ def _group_size(group: Any) -> int | None:
 class _WorkProxy:
     """Preserve the common Work interface while measuring wait completion."""
 
-    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int, token: int):
+    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int):
         self._work = work
         self._trace = trace
         self._event_id = event_id
-        self._trace_token = token
         self._waited = False
 
     def wait(self, *args: Any, **kwargs: Any) -> Any:
@@ -88,10 +87,11 @@ class _WorkProxy:
 class _P2PWorkProxy:
     """Observe deferred P2P request waits without changing request semantics."""
 
-    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int):
+    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int, token: int):
         self._work = work
         self._trace = trace
         self._event_id = event_id
+        self._trace_token = token
         self._waited = False
 
     def wait(self, *args: Any, **kwargs: Any) -> Any:
