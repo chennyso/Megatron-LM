@@ -28,6 +28,48 @@ def _tensor_bytes(tensor: Optional[torch.Tensor]) -> int:
     return int(tensor.numel() * tensor.element_size())
 
 
+def _p2p_message_tags(
+    *,
+    phase_context: dict,
+    send_prev: bool,
+    recv_prev: bool,
+    send_next: bool,
+    recv_next: bool,
+) -> dict[str, str]:
+    """Build metadata-only P2P identities for trace-side send/receive pairing.
+
+    The schedule keeps Megatron's existing FIFO and communicator ordering.
+    These tags deliberately do not become NCCL tags; they only identify the
+    logical message whose issue and completion are already observable.
+    """
+    local_pp_rank = phase_context.get("pp_rank")
+    tp_rank = phase_context.get("tp_rank")
+    vp_chunk = phase_context.get("vp_chunk")
+    microbatch = phase_context.get("microbatch_id")
+    virtual_microbatch = phase_context.get("virtual_microbatch_id")
+
+    def tag(source_pp_rank: int | None, direction: str) -> str:
+        return (
+            f"source_pp={source_pp_rank}|tp={tp_rank}|vp={vp_chunk}|"
+            f"mb={microbatch}|vmb={virtual_microbatch}|direction={direction}"
+        )
+
+    return {
+        **({"send_prev": tag(local_pp_rank, "backward")} if send_prev else {}),
+        **(
+            {"recv_prev": tag(local_pp_rank - 1 if local_pp_rank is not None else None, "forward")}
+            if recv_prev
+            else {}
+        ),
+        **({"send_next": tag(local_pp_rank, "forward")} if send_next else {}),
+        **(
+            {"recv_next": tag(local_pp_rank + 1 if local_pp_rank is not None else None, "backward")}
+            if recv_next
+            else {}
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class PipelineMessageTag:
     """Stable metadata for future tagged P2P matching.
@@ -476,6 +518,13 @@ class P2PCommunicator:
         # the helper immediately before it.  This is observability metadata
         # only: it does not change request order, streams, or wait behavior.
         phase_context = dict(phase_trace.context) if phase_trace is not None else {}
+        message_tags = _p2p_message_tags(
+            phase_context=phase_context,
+            send_prev=tensor_send_prev is not None,
+            recv_prev=tensor_recv_prev is not None,
+            send_next=tensor_send_next is not None,
+            recv_next=tensor_recv_next is not None,
+        )
         trace_metadata = {
             "send_prev": tensor_send_prev is not None,
             "recv_prev": tensor_recv_prev is not None,
@@ -489,6 +538,7 @@ class P2PCommunicator:
             "send_next_bytes": _tensor_bytes(tensor_send_next),
             "recv_next_bytes": _tensor_bytes(tensor_recv_next),
             "phase_context": phase_context,
+            "p2p_message_tags": message_tags,
         }
         phase_action = "PP_BWD" if tensor_send_prev is not None or tensor_recv_next is not None else "PP_FWD"
         phase_issue_id = None
@@ -528,7 +578,9 @@ class P2PCommunicator:
                 next_pipeline_rank=next_rank,
             )
         if phase_trace is not None and phase_issue_id is not None:
-            p2p_reqs = phase_trace.register_p2p_requests(phase_issue_id, p2p_reqs)
+            p2p_reqs = phase_trace.register_p2p_requests(
+                phase_issue_id, p2p_reqs, request_labels=message_tags
+            )
             phase_trace.finish(phase_issue_id)
         if isinstance(p2p_reqs, list):
             reqs.extend(p2p_reqs)

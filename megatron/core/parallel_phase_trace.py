@@ -88,11 +88,19 @@ class _WorkProxy:
 class _P2PWorkProxy:
     """Observe deferred P2P request waits without changing request semantics."""
 
-    def __init__(self, work: Any, trace: "ParallelPhaseTrace", event_id: int, token: int):
+    def __init__(
+        self,
+        work: Any,
+        trace: "ParallelPhaseTrace",
+        event_id: int,
+        token: int,
+        request_label: str | None,
+    ):
         self._work = work
         self._trace = trace
         self._event_id = event_id
         self._trace_token = token
+        self._request_label = request_label
         self._waited = False
 
     def wait(self, *args: Any, **kwargs: Any) -> Any:
@@ -102,6 +110,7 @@ class _P2PWorkProxy:
             self._trace_token,
             wait_ms=(time.perf_counter_ns() - start) / 1e6,
             double_wait=self._waited,
+            request_label=self._request_label,
         )
         self._waited = True
         return result
@@ -260,21 +269,37 @@ class ParallelPhaseTrace:
                     event.update(metadata)
                     return
 
-    def register_p2p_requests(self, event_id: int, requests: Any) -> Any:
-        """Bind returned P2P work objects to their issue event."""
+    def register_p2p_requests(
+        self, event_id: int, requests: Any, request_labels: dict[str, str] | None = None
+    ) -> Any:
+        """Bind returned P2P work objects to their issue event.
+
+        ``request_labels`` is trace-only semantic metadata.  It associates a
+        Work object with one of send_prev/recv_prev/send_next/recv_next without
+        changing the P2P operation order or its NCCL communicator.
+        """
         if isinstance(requests, dict):
+            labels = list(requests.keys())
             values = list(requests.values())
         elif isinstance(requests, (list, tuple)):
+            labels = [str(index) for index in range(len(requests))]
             values = list(requests)
         else:
+            labels = []
             values = []
         request_ids = []
         wrapped = []
-        for request in values:
+        for request, label in zip(values, labels):
             with self._lock:
                 request_id = self._next_request_token
                 self._next_request_token += 1
-            proxy = _P2PWorkProxy(request, self, event_id, request_id)
+            proxy = _P2PWorkProxy(
+                request,
+                self,
+                event_id,
+                request_id,
+                request_labels.get(label) if request_labels is not None else label,
+            )
             self._p2p_requests[request_id] = event_id
             self._p2p_wait_counts[request_id] = 0
             request_ids.append(request_id)
@@ -288,30 +313,48 @@ class ParallelPhaseTrace:
             return wrapped
         return requests
 
-    def mark_p2p_request_wait(self, request_id: int, *, wait_ms: float, double_wait: bool) -> None:
+    def mark_p2p_request_wait(
+        self,
+        request_id: int,
+        *,
+        wait_ms: float,
+        double_wait: bool,
+        request_label: str | None,
+    ) -> None:
         event_id = self._p2p_requests.get(request_id)
         if event_id is None:
             return
         count = self._p2p_wait_counts.get(request_id, 0) + 1
         self._p2p_wait_counts[request_id] = count
-        self.update(
-            event_id,
-            p2p_waited_count=sum(
-                value for request, value in self._p2p_wait_counts.items()
-                if self._p2p_requests.get(request) == event_id
-            ),
-            p2p_double_wait_count=(
-                sum(
-                    1 for request, value in self._p2p_wait_counts.items()
+        with self._lock:
+            for event in reversed(self.events):
+                if event.get("event_id") != event_id:
+                    continue
+                event["p2p_waited_count"] = sum(
+                    value
+                    for request, value in self._p2p_wait_counts.items()
+                    if self._p2p_requests.get(request) == event_id
+                )
+                event["p2p_double_wait_count"] = sum(
+                    1
+                    for request, value in self._p2p_wait_counts.items()
                     if self._p2p_requests.get(request) == event_id and value > 1
                 )
-            ),
-            last_p2p_wait_ms=float(wait_ms),
-            p2p_wait_thread_id=threading.get_ident(),
-            p2p_wait_stream_id=self._current_stream_id(),
-            p2p_wait_end_ts_ns=time.time_ns(),
-            double_wait=bool(double_wait),
-        )
+                event["last_p2p_wait_ms"] = float(wait_ms)
+                event["p2p_wait_thread_id"] = threading.get_ident()
+                event["p2p_wait_stream_id"] = self._current_stream_id()
+                event["p2p_wait_end_ts_ns"] = time.time_ns()
+                event["double_wait"] = bool(double_wait)
+                event.setdefault("p2p_request_waits", []).append(
+                    {
+                        "request_id": request_id,
+                        "request_label": request_label,
+                        "wait_ms": float(wait_ms),
+                        "wait_end_ts_ns": event["p2p_wait_end_ts_ns"],
+                        "double_wait": bool(double_wait),
+                    }
+                )
+                return
 
     def p2p_wait_metadata(self, requests: Any) -> dict[str, Any]:
         if isinstance(requests, dict):
