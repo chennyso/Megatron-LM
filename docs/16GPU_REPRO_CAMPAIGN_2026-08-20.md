@@ -88,6 +88,23 @@ of `-0.226`. Means grouped by `iteration mod 4` are 2553, 2453, 2528, and
 tail is therefore treated as routing/system variability, not as a new
 periodic phase-control mechanism.
 
+### VPP depth and tail tradeoff
+
+Changing `--num-layers-per-virtual-pipeline-stage` from four to six makes
+the same 48-layer PP4 model use VPP2 rather than VPP3. With the default legal
+VPP group, two no-trace repeats gave:
+
+| mode | baseline mean / P95 (ms) | EP overlap mean / P95 (ms) |
+|---|---:|---:|
+| VPP2, repeat 1 | 2570 / 3417 | 2741 / 2991 |
+| VPP2, repeat 2 | 2578 / 3519 | 2732 / 3093 |
+
+EP overlap consistently sacrifices mean step time (about 6%) while reducing
+the observed P95 (about 12%). This is a repeatable throughput-tail tradeoff,
+not an end-to-end improvement. A route-conditioned selector would require a
+predictive signal available before the choice and a frontier-safe per-period
+mode switch; neither has been demonstrated here.
+
 ## Nsight mechanism evidence
 
 Nsight capture was controlled by Megatron's `cudaProfilerStart/Stop`, with

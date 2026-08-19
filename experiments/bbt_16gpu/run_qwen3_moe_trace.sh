@@ -13,6 +13,7 @@ MOE_OVERLAP_OVERRIDE="${MOE_OVERLAP_OVERRIDE:-false}"
 MOE_DISPATCHER="${MOE_DISPATCHER_OVERRIDE:-alltoall}"
 P2P_OVERLAP_OVERRIDE="${P2P_OVERLAP_OVERRIDE:-true}"
 VPP_GROUP_SIZE_OVERRIDE="${VPP_GROUP_SIZE_OVERRIDE:-}"
+LAYERS_PER_VIRTUAL_STAGE_OVERRIDE="${LAYERS_PER_VIRTUAL_STAGE_OVERRIDE:-4}"
 NSYS_TAG="${NSYS_TAG:-}"
 NSYS_NODES="${NSYS_NODES:-g5}"
 NSYS_PROFILE_START_STEP="${NSYS_PROFILE_START_STEP:-4}"
@@ -82,7 +83,7 @@ launch() {
       --tensor-model-parallel-size 2 --pipeline-model-parallel-size 4 --expert-model-parallel-size 2 \\
       --num-layers 48 --hidden-size 2048 --ffn-hidden-size 6144 --num-attention-heads 32 --group-query-attention --num-query-groups 4 \\
       --num-experts '$NUM_EXPERTS' --moe-ffn-hidden-size '$MOE_FFN_HIDDEN_SIZE' --moe-router-topk 8 --moe-router-load-balancing-type aux_loss --moe-aux-loss-coeff 0.001 --moe-token-dispatcher-type '$MOE_DISPATCHER' \\
-      --num-layers-per-virtual-pipeline-stage 4 --seq-length '$SEQ_LENGTH' --max-position-embeddings 40960 --micro-batch-size 1 --global-batch-size '$GLOBAL_BATCH_SIZE' \\
+      --num-layers-per-virtual-pipeline-stage '$LAYERS_PER_VIRTUAL_STAGE_OVERRIDE' --seq-length '$SEQ_LENGTH' --max-position-embeddings 40960 --micro-batch-size 1 --global-batch-size '$GLOBAL_BATCH_SIZE' \\
       --bf16 --use-mcore-models --position-embedding-type rope --rotary-percent 1.0 --rotary-base 1000000 --tokenizer-type HuggingFaceTokenizer --tokenizer-model /models/qwen3-30B-A3B \\
       --normalization RMSNorm --swiglu --disable-bias-linear --untie-embeddings-and-output-weights --sequence-parallel --use-distributed-optimizer --mock-data $MOE_OVERLAP_ARGS \\
       --train-iters '$ITERS' --eval-iters 1 --eval-interval 1000 --log-interval 1 --lr 1e-6 --min-lr 1e-7 --lr-decay-style constant \\
