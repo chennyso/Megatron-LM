@@ -471,6 +471,11 @@ class P2PCommunicator:
 
         trace_enabled = getattr(config, "pipeline_strategy_trace_hook", None) is not None
         phase_trace = get_active_phase_trace() if get_active_phase_trace is not None else None
+        # P2P is issued outside the forward/backward helpers, so its event
+        # would otherwise lose the virtual-microbatch identity that was set by
+        # the helper immediately before it.  This is observability metadata
+        # only: it does not change request order, streams, or wait behavior.
+        phase_context = dict(phase_trace.context) if phase_trace is not None else {}
         trace_metadata = {
             "send_prev": tensor_send_prev is not None,
             "recv_prev": tensor_recv_prev is not None,
@@ -483,6 +488,7 @@ class P2PCommunicator:
             "recv_prev_bytes": _tensor_bytes(tensor_recv_prev),
             "send_next_bytes": _tensor_bytes(tensor_send_next),
             "recv_next_bytes": _tensor_bytes(tensor_recv_next),
+            "phase_context": phase_context,
         }
         phase_action = "PP_BWD" if tensor_send_prev is not None or tensor_recv_next is not None else "PP_FWD"
         phase_issue_id = None
