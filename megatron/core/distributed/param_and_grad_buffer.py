@@ -209,6 +209,7 @@ class _ParamAndGradBucketGroup:
         # collective, so the predecessor's intermediate all-to-all buffer is freed before the new
         # one is allocated.
         self.previous_grad_reduce_bucket_group = None
+        self._phase_trace_pending: list[tuple[object, int]] = []
 
         if self.ddp_config.num_distributed_optimizer_instances > 1:
             self.inter_distributed_optimizer_instance_group = None
@@ -668,6 +669,17 @@ class _ParamAndGradBucketGroup:
                     local_data_view = self.cached_grad_buffer_shard_list[idx][
                         self.intra_distributed_optimizer_instance_rank
                     ]
+                    phase_event_id = None
+                    if phase_trace is not None:
+                        phase_event_id = phase_trace.start(
+                            "reduce_scatter",
+                            int(bucket.grad_data.numel() * bucket.grad_data.element_size()),
+                            communication_group,
+                            action_class="DP_RS",
+                            event_kind="issue",
+                            bucket_index=idx,
+                            async_op=async_op,
+                        )
                     grad_reduce_handle = dist_reduce_scatter_func(
                         local_data_view,
                         bucket.grad_data,
@@ -675,14 +687,35 @@ class _ParamAndGradBucketGroup:
                         group=communication_group,
                         async_op=async_op,
                     )
+                    if phase_event_id is not None:
+                        if async_op:
+                            self._phase_trace_pending.append((phase_trace, phase_event_id))
+                        else:
+                            phase_trace.finish(phase_event_id)
                 else:
                     if torch.distributed.get_rank() == 0 and force_all_reduce:
                         logger.info(
                             f"Performing reduction using all_reduce because {force_all_reduce=}"
                         )
+                    phase_event_id = None
+                    if phase_trace is not None:
+                        phase_event_id = phase_trace.start(
+                            "all_reduce",
+                            int(bucket.grad_data.numel() * bucket.grad_data.element_size()),
+                            communication_group,
+                            action_class="DP_AR",
+                            event_kind="issue",
+                            bucket_index=idx,
+                            async_op=async_op,
+                        )
                     torch.distributed.all_reduce(
                         bucket.grad_data, op=reduce_op, group=communication_group, async_op=async_op
                     )
+                    if phase_event_id is not None:
+                        if async_op:
+                            self._phase_trace_pending.append((phase_trace, phase_event_id))
+                        else:
+                            phase_trace.finish(phase_event_id)
 
         # With multiple DistOpt instances, we need to all-reduce across instances.
         if (
@@ -710,12 +743,28 @@ class _ParamAndGradBucketGroup:
                         self.intra_distributed_optimizer_instance_rank
                     ]
 
+                    phase_event_id = None
+                    if phase_trace is not None:
+                        phase_event_id = phase_trace.start(
+                            "all_reduce",
+                            int(local_data_view.numel() * local_data_view.element_size()),
+                            self.inter_distributed_optimizer_instance_group,
+                            action_class="DP_AR",
+                            event_kind="issue",
+                            bucket_index=idx,
+                            async_op=async_op,
+                        )
                     torch.distributed.all_reduce(
                         local_data_view,
                         op=reduce_op,
                         group=self.inter_distributed_optimizer_instance_group,
                         async_op=async_op,
                     )
+                    if phase_event_id is not None:
+                        if async_op:
+                            self._phase_trace_pending.append((phase_trace, phase_event_id))
+                        else:
+                            phase_trace.finish(phase_event_id)
 
         if async_op:
             if self.ddp_config.reduce_scatter_with_fp32_accumulation and not force_all_reduce:
@@ -770,6 +819,9 @@ class _ParamAndGradBucketGroup:
         # communications on a separate communication stream.
         if self.ddp_config.num_distributed_optimizer_instances > 1:
             torch.cuda.current_stream().wait_stream(self.communication_stream)
+            for trace, event_id in self._phase_trace_pending:
+                trace.finish(event_id)
+            self._phase_trace_pending.clear()
             self._copy_back_extra_main_grads()
             self.grad_reduce_finished = True
             return
@@ -780,6 +832,9 @@ class _ParamAndGradBucketGroup:
         )
         self.grad_reduce_handle.wait()
         self.grad_reduce_handle = None
+        for trace, event_id in self._phase_trace_pending:
+            trace.finish(event_id)
+        self._phase_trace_pending.clear()
         self._copy_back_extra_main_grads()
         self.grad_reduce_finished = True
 

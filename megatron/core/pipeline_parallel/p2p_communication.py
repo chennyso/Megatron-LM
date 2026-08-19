@@ -21,6 +21,13 @@ except ImportError:
 Shape = Union[List[int], torch.Size]
 
 
+def _tensor_bytes(tensor: Optional[torch.Tensor]) -> int:
+    """Return a scalar payload size for semantic P2P trace matching."""
+    if tensor is None:
+        return 0
+    return int(tensor.numel() * tensor.element_size())
+
+
 @dataclass(frozen=True)
 class PipelineMessageTag:
     """Stable metadata for future tagged P2P matching.
@@ -472,6 +479,10 @@ class P2PCommunicator:
             "wait_on_reqs": wait_on_reqs,
             "batch_p2p_comm": config.batch_p2p_comm,
             "ring_exchange": config.use_ring_exchange_p2p,
+            "send_prev_bytes": _tensor_bytes(tensor_send_prev),
+            "recv_prev_bytes": _tensor_bytes(tensor_recv_prev),
+            "send_next_bytes": _tensor_bytes(tensor_send_next),
+            "recv_next_bytes": _tensor_bytes(tensor_recv_next),
         }
         phase_action = "PP_BWD" if tensor_send_prev is not None or tensor_recv_next is not None else "PP_FWD"
         phase_issue_id = None
