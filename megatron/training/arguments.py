@@ -2880,6 +2880,10 @@ def _add_distributed_args(parser):
                        help='Number of layers per virtual pipeline stage')
     group.add_argument('--num-virtual-stages-per-pipeline-rank', type=int, default=None,
                        help='Number of virtual pipeline stages per pipeline parallelism rank')
+    group.add_argument('--overlap-p2p-communication', action='store_true',
+                       default=False,
+                       help='overlap pipeline parallel communication with forward and backward chunks in 1F1B',
+                       dest='overlap_p2p_comm')
     group.add_argument('--no-overlap-p2p-communication', action='store_false',
                        help='overlap pipeline parallel communication with forward and backward chunks in 1F1B',
                        dest='overlap_p2p_comm')
