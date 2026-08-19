@@ -49,11 +49,11 @@ def _read(paths: Iterable[str]) -> list[dict[str, Any]]:
     return events
 
 
-def _request_wait(event: dict[str, Any], label: str) -> float | None:
+def _request_wait(event: dict[str, Any], label: str, tag: str) -> float | None:
     waits = [
         float(item["wait_ms"])
         for item in event.get("p2p_request_waits", [])
-        if item.get("request_label") == label and not item.get("double_wait")
+        if item.get("request_label") in {label, tag} and not item.get("double_wait")
     ]
     return max(waits) if waits else None
 
@@ -70,7 +70,7 @@ def analyze(events: list[dict[str, Any]]) -> dict[str, Any]:
             record = {
                 "rank": event.get("rank"),
                 "issue_ts_ns": event.get("issue_ts_ns"),
-                "wait_ms": _request_wait(event, label),
+                "wait_ms": _request_wait(event, label, tag),
                 "context": event.get("context") or {},
                 "label": label,
             }
