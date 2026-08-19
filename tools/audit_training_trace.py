@@ -218,13 +218,13 @@ def audit_run(run: Path, warmup: int, trace_iteration_offset: int) -> dict[str, 
     # and correlations use the same complete-step population.
     p2p_series: dict[str, list[tuple[bool, float, float]]] = defaultdict(list)
     p2p_keys = {
-        f"rank={rank}|{edge}"
+        (rank, edge)
         for row in rows
         for rank, summary in row["rank_trace"].items()
         for edge in summary.get("p2p_by_edge", {})
     }
-    for key in p2p_keys:
-        rank, edge = key.split("|", 1)
+    for rank, edge in p2p_keys:
+        key = f"rank={rank}|{edge}"
         for row in rows:
             value = float(
                 row["rank_trace"].get(rank, {}).get("p2p_by_edge", {}).get(edge, {}).get("wait_ms", 0.0)
