@@ -33,6 +33,8 @@ NSYS_NODES="${NSYS_NODES:-both}"
 NSYS_PROFILE_START_STEP="${NSYS_PROFILE_START_STEP:-8}"
 NSYS_PROFILE_END_STEP="${NSYS_PROFILE_END_STEP:-14}"
 NSYS_PROFILE_RANKS="${NSYS_PROFILE_RANKS:-}"
+TRACE_OVERRIDE="${TRACE_OVERRIDE:-true}"
+STRATEGY_PROFILE_STEPS="${STRATEGY_PROFILE_STEPS:-4}"
 if (( VPP <= 0 || LAYERS % (PP * VPP) != 0 )); then
   echo "illegal VPP=$VPP for layers=$LAYERS and PP=$PP" >&2
   exit 2
@@ -58,9 +60,11 @@ case "$DDP_MODE" in
   default) DDP_ARGS="" ;;
   overlap4) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4" ;;
   overlap8) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8" ;;
-  overlap4_p2p) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --overlap-p2p-communication" ;;
-  overlap8_p2p) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8 --overlap-p2p-communication" ;;
-  overlap4_p2p_adaptive) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --overlap-p2p-communication --pipeline-strategy-adaptive-vpp-group" ;;
+  # The pinned Megatron snapshot enables VPP P2P overlap by default and only
+  # exposes the negative CLI switch.  Do not pass a stale positive flag.
+  overlap4_p2p) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4" ;;
+  overlap8_p2p) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8" ;;
+  overlap4_p2p_adaptive) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --pipeline-strategy-adaptive-vpp-group" ;;
   allchunks4) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --vpp-bucket-policy all-chunks" ;;
   allchunks8) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 8 --vpp-bucket-policy all-chunks" ;;
   rank0chunks4) DDP_ARGS="--overlap-grad-reduce --ddp-num-buckets 4 --vpp-bucket-policy rank0-all-chunks" ;;
@@ -97,9 +101,10 @@ else
   HCP_ARG=""
 fi
 if [[ "$P2P_OVERLAP" == "true" ]]; then
-  P2P_ARGS="--overlap-p2p-communication"
-elif [[ "$P2P_OVERLAP" == "false" ]]; then
+  # P2P overlap is the VPP default in the pinned remote code snapshot.
   P2P_ARGS=""
+elif [[ "$P2P_OVERLAP" == "false" ]]; then
+  P2P_ARGS="--no-overlap-p2p-communication"
 else
   echo "P2P_OVERLAP_OVERRIDE must be true or false, got $P2P_OVERLAP" >&2
   exit 2
@@ -112,6 +117,14 @@ if [[ -n "$NSYS_TAG" ]]; then
   PROFILE_ARGS="--profile --profile-step-start $NSYS_PROFILE_START_STEP --profile-step-end $NSYS_PROFILE_END_STEP --profile-ranks $NSYS_PROFILE_RANKS --nvtx-ranges"
 else
   PROFILE_ARGS=""
+fi
+if [[ "$TRACE_OVERRIDE" == "true" ]]; then
+  STRATEGY_TRACE_ARGS="--pipeline-strategy-profile-steps '$STRATEGY_PROFILE_STEPS' --pipeline-strategy-trace-path '$RUN_DIR/traces/rank{rank}.json'"
+elif [[ "$TRACE_OVERRIDE" == "false" ]]; then
+  STRATEGY_TRACE_ARGS=""
+else
+  echo "TRACE_OVERRIDE must be true or false, got $TRACE_OVERRIDE" >&2
+  exit 2
 fi
 
 launch() {
@@ -161,8 +174,7 @@ launch() {
       $DDP_ARGS \
       $P2P_ARGS \
       $PROFILE_ARGS \
-      --pipeline-strategy-profile-steps 4 \
-      --pipeline-strategy-trace-path '$RUN_DIR/traces/rank{rank}.json' \
+      $STRATEGY_TRACE_ARGS \
       > '$log' 2>&1
   " &
 }
