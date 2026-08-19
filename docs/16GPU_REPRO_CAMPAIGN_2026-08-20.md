@@ -78,6 +78,16 @@ This is a stable worsening, rather than a useful winner inversion. It shows
 that the penalty of fixed EP overlap depends on the VPP action wave, but it
 does not establish a new mechanism beyond existing joint-overlap work.
 
+### Periodicity check
+
+A 64-iteration untraced all-to-all baseline was used to test the stricter
+claim that the VPP period creates persistent phase locking. After removing
+the first two iterations, the 62-step sequence has a lag-4 autocorrelation
+of `-0.226`. Means grouped by `iteration mod 4` are 2553, 2453, 2528, and
+2487 ms. This is not evidence of a stable VPP-period resonance. The current
+tail is therefore treated as routing/system variability, not as a new
+periodic phase-control mechanism.
+
 ## Nsight mechanism evidence
 
 Nsight capture was controlled by Megatron's `cudaProfilerStart/Stop`, with
