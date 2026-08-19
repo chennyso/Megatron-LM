@@ -2890,9 +2890,10 @@ def _add_distributed_args(parser):
     group.add_argument('--ddp-bucket-size', type=int, default=None,
                        help='Bucket size for data-parallel communication')
     group.add_argument('--vpp-bucket-policy', type=str, default='default',
-                       choices=['default', 'all-chunks'],
+                       choices=['default', 'rank0-all-chunks', 'all-chunks'],
                        help='VPP-aware gradient bucketing policy. default keeps the '
-                       'legacy first-chunk/first-PP-rank policy; all-chunks enables '
+                       'legacy first-chunk/first-PP-rank policy; rank0-all-chunks '
+                       'enables all VPP chunks only on PP rank 0; all-chunks enables '
                        'overlapped gradient buckets for every VPP chunk and PP rank.')
     group.add_argument('--ddp-pad-buckets-for-high-nccl-busbw', action='store_true',
                        default=False, help='If set, make sure the bucket size is divisible by a large power '

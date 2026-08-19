@@ -1801,7 +1801,7 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
         # is on, or for non-zero pipeline-parallel ranks.
         pp_rank = get_pg_rank(pg_collection.pp)
         vpp_bucket_policy = getattr(args, 'vpp_bucket_policy', 'default')
-        if vpp_bucket_policy == 'all-chunks':
+        if vpp_bucket_policy in ('rank0-all-chunks', 'all-chunks'):
             # VPP reverses chunk order during backward.  The legacy policy
             # disables all but the first chunk because it assumes those
             # gradients are off the critical path.  That assumption is false
