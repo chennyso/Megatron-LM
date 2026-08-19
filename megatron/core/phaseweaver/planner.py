@@ -135,9 +135,11 @@ class PhaseWeaverPlanner:
         # max caused by startup and rank skew.
         base = max(1, deltas[len(deltas) // 2])
         cadence_q3 = deltas[min(len(deltas) - 1, (3 * len(deltas)) // 4)]
-        collective = sorted(
-            item.duration_ns for item in actions if item.action_class.startswith(("DP_", "UNKNOWN_"))
-        )
+        # Unknown collectives are intentionally excluded.  Their ownership
+        # (optimizer, embedding, TP, or DP) is unresolved, so using them to
+        # size a VPP period would turn an instrumentation gap into a false
+        # deadline or slack opportunity.
+        collective = sorted(item.duration_ns for item in actions if item.action_class.startswith("DP_"))
         service_q = collective[min(len(collective) - 1, (3 * len(collective)) // 4)] if collective else base
         return max(base, cadence_q3, service_q)
 
@@ -175,7 +177,11 @@ class PhaseWeaverPlanner:
         return matrix
 
     def _windows(self, actions: Sequence[Action], period_ns: int, offset_ns: int) -> tuple[BucketWindow, ...]:
-        dp = [item for item in actions if item.action_class in {"DP_RS", "DP_AG", "DP_AR", "UNKNOWN_RS", "UNKNOWN_AR"}]
+        # An unlabeled collective is not evidence of DP slack.  Treating it as
+        # DP would manufacture a movable bucket out of PP/embedding/optimizer
+        # work with unknown semantics.  The extractor must label real DP/ZeRO
+        # buckets before this compiler is allowed to synthesize a mode.
+        dp = [item for item in actions if item.action_class in {"DP_RS", "DP_AG", "DP_AR"}]
         pp = [item for item in actions if item.action_class.startswith("PP_")]
         if not dp:
             return tuple()

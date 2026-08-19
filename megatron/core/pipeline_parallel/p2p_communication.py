@@ -12,6 +12,11 @@ from megatron.core.model_parallel_config import ModelParallelConfig
 from megatron.core.pipeline_parallel.utils import is_pp_first_stage, is_pp_last_stage
 from megatron.core.utils import nvtx_decorator
 
+try:
+    from megatron.core.parallel_phase_trace import get_active as get_active_phase_trace
+except ImportError:
+    get_active_phase_trace = None
+
 # Types
 Shape = Union[List[int], torch.Size]
 
@@ -458,6 +463,7 @@ class P2PCommunicator:
             tensor_recv_next = tensor_recv_next_func()
 
         trace_enabled = getattr(config, "pipeline_strategy_trace_hook", None) is not None
+        phase_trace = get_active_phase_trace() if get_active_phase_trace is not None else None
         trace_metadata = {
             "send_prev": tensor_send_prev is not None,
             "recv_prev": tensor_recv_prev is not None,
@@ -467,6 +473,18 @@ class P2PCommunicator:
             "batch_p2p_comm": config.batch_p2p_comm,
             "ring_exchange": config.use_ring_exchange_p2p,
         }
+        phase_action = "PP_BWD" if tensor_send_prev is not None or tensor_recv_next is not None else "PP_FWD"
+        phase_issue_id = None
+        if phase_trace is not None:
+            phase_issue_id = phase_trace.start(
+                "p2p_issue",
+                sum(int(t.numel() * t.element_size()) for t in
+                    (tensor_send_prev, tensor_recv_prev, tensor_send_next, tensor_recv_next)
+                    if t is not None),
+                pp_group,
+                action_class=phase_action,
+                event_kind="issue",
+            )
         if trace_enabled:
             with _P2PTraceTimer() as issue_timer:
                 p2p_reqs = p2p_func(
@@ -489,12 +507,21 @@ class P2PCommunicator:
                 prev_pipeline_rank=prev_rank,
                 next_pipeline_rank=next_rank,
             )
+        if phase_trace is not None and phase_issue_id is not None:
+            phase_trace.finish(phase_issue_id)
         if isinstance(p2p_reqs, list):
             reqs.extend(p2p_reqs)
         else:
             reqs.update(p2p_reqs)
 
         if wait_on_reqs and len(reqs) > 0:
+            phase_wait_id = None
+            if phase_trace is not None:
+                phase_wait_id = phase_trace.start(
+                    "p2p_wait", 0, pp_group,
+                    action_class=phase_action,
+                    event_kind="completion_wait",
+                )
             if trace_enabled:
                 with _P2PTraceTimer() as wait_timer:
                     for req in reqs if isinstance(reqs, list) else reqs.values():
@@ -508,6 +535,8 @@ class P2PCommunicator:
             else:
                 for req in reqs if isinstance(reqs, list) else reqs.values():
                     req.wait()
+            if phase_trace is not None and phase_wait_id is not None:
+                phase_trace.finish(phase_wait_id)
             reqs = None
 
         if config.batch_p2p_comm and config.batch_p2p_sync:

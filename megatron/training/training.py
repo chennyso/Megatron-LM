@@ -58,6 +58,7 @@ from megatron.core.optimizer.layer_wise_optimizer import (
     tag_params_for_buffer_routing,
 )
 from megatron.core.optimizer_param_scheduler import get_canonical_lr_for_logging
+from megatron.core.parallel_phase_trace import get_active as get_active_phase_trace
 
 from .log_handler import CustomHandler
 
@@ -3441,6 +3442,9 @@ def train(
     # Run training iterations till done.
     buffered_rollouts = None
     while iteration < args.train_iters:
+        phase_trace = get_active_phase_trace()
+        if phase_trace is not None:
+            phase_trace.set_context(iteration=iteration)
         if (args.profile
             and (len(args.profile_ranks) == 0 or
                  torch.distributed.get_rank() in args.profile_ranks)):

@@ -61,6 +61,7 @@ from megatron.training.datasets.sft_dataset import SFTDataset
 from megatron.training.training import update_seqlen_stats_from_cu_seqlens
 from megatron.training.utils import get_blend_and_blend_per_split, is_first_or_last_pipeline_stage
 from model_provider import model_provider
+from megatron.core.parallel_phase_trace import install_persistent
 
 try:
     from megatron.post_training.arguments import add_modelopt_args
@@ -411,6 +412,19 @@ if __name__ == "__main__":
         extra_args_provider=add_modelopt_args if has_nvidia_modelopt else None,
         args_defaults={'tokenizer_type': 'GPT2BPETokenizer'},
     )
+    # Install before ``pretrain`` constructs the optimizer.  This keeps one
+    # trace across PP schedules and optimizer/ZeRO synchronization phases.
+    phase_trace_path = getattr(args, "pipeline_strategy_trace_path", None)
+    if phase_trace_path:
+        global_rank = int(os.environ.get("RANK", getattr(args, "rank", 0)))
+        phase_trace_path = phase_trace_path.format(
+            rank=global_rank,
+            pp_rank=global_rank,
+            tp_rank=global_rank,
+            dp_rank=global_rank,
+        )
+        phase_trace = install_persistent(f"{phase_trace_path}.phase.jsonl", rank=global_rank)
+        phase_trace.set_context(process_level=True)
     model_cfg = gpt_config_from_args(args)
     full_config = pretrain_cfg_container_from_args(args, model_cfg)
     pretrain(full_config,
