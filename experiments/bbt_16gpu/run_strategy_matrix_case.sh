@@ -11,12 +11,13 @@ GROUP_SIZE="${7:-}"
 DDP_MODE="${8:-default}"
 LAYOUT="${9:-}"
 NSYS_TAG="${10:-}"
+CP="${CP_OVERRIDE:-1}"
 WORLD=16
-if (( WORLD % TP != 0 || WORLD % PP != 0 || WORLD % (TP * PP) != 0 )); then
-  echo "invalid factorization TP=$TP PP=$PP for world=$WORLD" >&2
+if (( WORLD % TP != 0 || WORLD % PP != 0 || WORLD % CP != 0 || WORLD % (TP * PP * CP) != 0 )); then
+  echo "invalid factorization TP=$TP PP=$PP CP=$CP for world=$WORLD" >&2
   exit 2
 fi
-DP=$((WORLD / TP / PP))
+DP=$((WORLD / TP / PP / CP))
 LAYERS="${LAYERS_OVERRIDE:-36}"
 if (( VPP <= 0 || LAYERS % (PP * VPP) != 0 )); then
   echo "illegal VPP=$VPP for layers=$LAYERS and PP=$PP" >&2
@@ -92,6 +93,7 @@ launch() {
       pretrain_gpt.py \
       --tensor-model-parallel-size '$TP' \
       --pipeline-model-parallel-size '$PP' \
+      --context-parallel-size '$CP' \
       --num-layers '$LAYERS' --hidden-size 4096 --ffn-hidden-size 12288 \
       --num-attention-heads 32 --group-query-attention --num-query-groups 8 \
       --seq-length 4096 --max-position-embeddings 40960 \
