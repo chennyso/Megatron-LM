@@ -2229,8 +2229,14 @@ def train_step(forward_step_func, data_iterator, model, optimizer, opt_param_sch
         next_group = current_group
         if torch.distributed.get_rank() == 0:
             waits = get_last_p2p_wait_summary()
-            backward_chunk2 = waits.get("PP_BWD|backward|chunk=2|sprn", 0.0)
-            forward_chunk1 = waits.get("PP_FWD|forward|chunk=1|rpsn", 0.0)
+            backward_chunk2 = sum(
+                value for key, value in waits.items()
+                if key.startswith("PP_BWD|backward|chunk=2|")
+            )
+            forward_chunk1 = sum(
+                value for key, value in waits.items()
+                if key.startswith("PP_FWD|forward|chunk=1|")
+            )
             if current_group == 4 and backward_chunk2 > 120.0:
                 next_group = 8
             elif current_group == 8 and forward_chunk1 > 100.0:
