@@ -484,6 +484,9 @@ class P2PCommunicator:
                 pp_group,
                 action_class=phase_action,
                 event_kind="issue",
+                **trace_metadata,
+                prev_pipeline_rank=prev_rank,
+                next_pipeline_rank=next_rank,
             )
         if trace_enabled:
             with _P2PTraceTimer() as issue_timer:
@@ -521,6 +524,9 @@ class P2PCommunicator:
                     "p2p_wait", 0, pp_group,
                     action_class=phase_action,
                     event_kind="completion_wait",
+                    **trace_metadata,
+                    prev_pipeline_rank=prev_rank,
+                    next_pipeline_rank=next_rank,
                 )
             if trace_enabled:
                 with _P2PTraceTimer() as wait_timer:
