@@ -21,6 +21,7 @@ from megatron.core.pipeline_parallel.strategy_synthesizer import (
     StrategyVerifier,
     build_strategy_schedule_table,
     load_strategy_plan,
+    strategy_candidate_to_plan,
 )
 from megatron.core.pipeline_parallel.strategy_runtime import BCPReadyRuntime, BubbleFillWork
 from megatron.core.parallel_phase_trace import install_from_config
@@ -936,6 +937,8 @@ def get_schedule_table(
     strategy_plan_path=None,
     strategy_memory_budget_mb=None,
     strategy_runtime="fixed",
+    pipeline_parallel_rank=0,
+    activation_offloading=False,
 ):
     """Get the schedule table for PP scheduling."""
     if strategy_plan_path:
@@ -968,8 +971,13 @@ def get_schedule_table(
             rewrites=plan.rewrites,
             tasks=plan.tasks,
             metadata=plan.metadata,
+            activation_edges=getattr(plan, "activation_edges", ()),
         )
         StrategyVerifier(constraints, memory_budget_mb=strategy_memory_budget_mb).verify(plan)
+        if getattr(plan, "activation_edges", ()) and activation_offloading:
+            off_interface.configure_activation_admission(
+                plan.activation_edges, pp_rank=pipeline_parallel_rank
+            )
         return list(plan.schedule_table)
 
     if policy != "default":
@@ -984,6 +992,25 @@ def get_schedule_table(
                 pipeline_parallel_size=pipeline_parallel_size,
             ),
         )
+        # Policy candidates are validated as soon as they cross the lowering
+        # boundary.  The legacy interleaved executor derives activation queue
+        # lifetimes from the default grouped table; without this check a
+        # candidate can pass the local monotonicity checks and fail later as an
+        # opaque input_tensors IndexError inside the hot loop.
+        candidate_plan = strategy_candidate_to_plan(
+            candidate,
+            microbatch_group_size=microbatch_group_size_per_vp_stage,
+            runtime_policy={"runtime": strategy_runtime},
+        )
+        StrategyVerifier(
+            StrategyConstraints(
+                num_microbatches=num_microbatches,
+                num_model_chunks=num_model_chunks,
+                microbatch_group_size=microbatch_group_size_per_vp_stage,
+                pipeline_parallel_size=pipeline_parallel_size,
+            ),
+            memory_budget_mb=strategy_memory_budget_mb,
+        ).verify(candidate_plan)
         return list(candidate.schedule_table)
 
     schedule_table = []
@@ -1228,10 +1255,13 @@ def forward_backward_pipelining_with_interleaving(
     if config.num_microbatches_with_partial_activation_checkpoints is not None:
         max_outstanding_backprops = num_warmup_microbatches + 1
 
-    # Synchronize params for first two model chunks
+    # Synchronize params for first two model chunks.  A staggered policy keeps
+    # the first chunk aligned but lets the second chunk dispatch from its
+    # forward pre-hook, exposing a VPP phase-selective launch point.
     if config.param_sync_func is not None:
         config.param_sync_func[0](model[0].parameters())
-        config.param_sync_func[1](model[1].parameters())
+        if getattr(config, "pipeline_strategy_param_gather_policy", "aligned") != "staggered":
+            config.param_sync_func[1](model[1].parameters())
 
     # Create a tunable schedule lookup table.
     # The schedule lookup table uses the virtual_microbatch_id to find the corresponding
@@ -1383,6 +1413,8 @@ def forward_backward_pipelining_with_interleaving(
         strategy_plan_path=pipeline_strategy_plan,
         strategy_memory_budget_mb=pipeline_strategy_memory_budget_mb,
         strategy_runtime=pipeline_strategy_runtime,
+        pipeline_parallel_rank=pipeline_parallel_rank,
+        activation_offloading=getattr(config, "fine_grained_activation_offloading", False),
     )
 
     # Decouple individual lookup table for microbatch_id and model_chunk_id.

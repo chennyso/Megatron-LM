@@ -78,6 +78,19 @@ def test_deallocate_output_tensor():
     assert out.nelement() == 6
 
 
+def test_nondefault_strategy_rejected_before_interleaved_executor():
+    """Reject queue-invalid policy tables at lowering, not in the hot loop."""
+
+    with pytest.raises(ValueError, match="table-driven executor support"):
+        schedule.get_schedule_table(
+            num_microbatches=8,
+            num_model_chunks=2,
+            microbatch_group_size_per_vp_stage=4,
+            policy="front-loaded",
+            pipeline_parallel_size=4,
+        )
+
+
 @pytest.mark.internal
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.parametrize(
